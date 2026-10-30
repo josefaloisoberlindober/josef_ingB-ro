@@ -1,7 +1,7 @@
 // Offline-Betrieb: App-Dateien, Bibliotheken und Kartenkacheln aus dem Cache.
-const APP = "app-v1", LIB = "lib-v1", KACHELN = "kacheln-v1";
-const APP_DATEIEN = ["./", "index.html", "css/app.css", "manifest.webmanifest", "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png",
-  "js/main.js", "js/store.js", "js/geo.js", "js/dem.js", "js/karte.js", "js/ui.js", "js/planen.js", "js/aufnehmen.js", "js/blatt.js", "js/daten.js"];
+const APP = "app-v2", LIB = "lib-v1", KACHELN = "kacheln-v1";
+const APP_DATEIEN = ["./", "index.html", "app.css", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png",
+  "main.js", "store.js", "geo.js", "dem.js", "karte.js", "ui.js", "planen.js", "aufnehmen.js", "blatt.js", "daten.js"];
 const LIBS = ["https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js", "https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css",
   "https://unpkg.com/maplibre-contour@0.1.0/dist/index.min.js", "https://cdn.jsdelivr.net/npm/proj4@2.12.1/dist/proj4.js",
   "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"];
