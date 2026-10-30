@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Forststraße</title>
+<meta name="description" content="Vorplanung und Feldaufnahme von Forststraßen – Ingenieurbüro Oberlindober">
+<meta name="theme-color" content="#2f5d3a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Forststraße">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header class="kopf">
+  <button class="projektname" id="projektname" title="Projekt wechseln">–</button>
+  <nav class="tabs" id="tabs">
+    <button data-modus="planen">Planen</button>
+    <button data-modus="aufnehmen">Aufnehmen</button>
+    <button data-modus="blatt">Projektblatt</button>
+    <button data-modus="daten">Daten</button>
+  </nav>
+  <span class="speicherstatus" id="speicherstatus"></span>
+</header>
+
+<main class="haupt">
+  <div id="karte" class="karte"></div>
+  <div class="fadenkreuz" id="fadenkreuz" hidden></div>
+  <div class="kartenknoepfe">
+    <button id="btn-ebenen" title="Kartenebenen">◫</button>
+    <button id="btn-position" title="Auf meine Position">◎</button>
+  </div>
+  <div class="ebenen" id="ebenen" hidden></div>
+  <div class="hinweisband" id="hinweisband" hidden></div>
+  <aside class="panel" id="panel"></aside>
+</main>
+
+<div class="sheet-huelle" id="sheet-huelle" hidden>
+  <div class="sheet" id="sheet"></div>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/maplibre-contour@0.1.0/dist/index.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/proj4@2.12.1/dist/proj4.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
