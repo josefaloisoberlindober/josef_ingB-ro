@@ -5,6 +5,7 @@ import { hoehenGK } from "./dem.js";
 import { zuGK, zuWGS, abstand, teile, vereinfache, aufLinie, fmt, hm } from "./geo.js";
 import { $, $$, esc, toast, frage, eingabe, sheet, entprellt } from "./ui.js";
 import { neueId } from "./store.js";
+import { sucheTrasse } from "./vorschlag.js";
 
 const FARBEN = ["#c0392b", "#7b1fa2", "#d35400", "#00897b", "#283593", "#6d4c41"];
 let panel = null, aktivModus = false, werkzeug = null, nullStart = null, marker = [], hoverMarker = null;
@@ -16,7 +17,8 @@ const grenzen = () => ({ max: app.projekt.weg.laengsneigung_max ?? 0.10, min: ap
   wechsel: app.projekt.weg.neigungswechsel_max ?? 0.03 });
 const querMax = () => app.projekt.weg.querneigung_max ?? 1.0;
 const maxVerschiebung = () => app.projekt.weg.verschiebung_max_m ?? 15;
-let anpassenLaeuft = false;
+let anpassenLaeuft = false, suchLaeuft = false, vorschlagStart = null, startMarker = null;
+const zielRadius = () => app.projekt.weg.zielradius_m ?? 20;
 
 export function farbeNeigung(g) {
   const { max, min } = grenzen(), a = Math.abs(g);
@@ -152,7 +154,7 @@ export function betreten(el) {
   render(); setzeKnoten();
 }
 export function verlassen() {
-  aktivModus = false; werkzeug = null;
+  aktivModus = false; werkzeug = null; vorschlagStart = null; startMarker?.remove(); startMarker = null;
   karte.off("click", kartenKlick); karte.getCanvas().style.cursor = "";
   marker.forEach(m => m.remove()); marker = []; hoverMarker?.remove(); hoverMarker = null;
 }
@@ -166,8 +168,9 @@ export function projektGeaendert(was) {
 
 function render() {
   if (!aktivModus) return;
-  const vs = P().varianten, v = aktiv(), { max, min } = grenzen();
+  const vs = P().varianten, v = aktiv(), { max, min, wechsel } = grenzen();
   karte.getCanvas().style.cursor = werkzeug ? "crosshair" : "";
+  const vw = werkzeug === "vorschlag";
   panel.innerHTML = `
     <h2>Vorplanung</h2>
     <p class="klein">Varianten am Mac vorplanen, dann über „Daten“ aufs iPad übertragen und im Gelände abgehen.</p>
@@ -176,12 +179,24 @@ function render() {
         <span class="farbpunkt" style="background:${x.farbe}"></span>
         <div class="wachsen"><b>${esc(x.name)}</b><small>${x.punkte.length} Knoten${analysen.get(x.id)?.daten ? " · " + fmt(analysen.get(x.id).daten.L) + " m" : ""}</small></div>
         <button class="btn" data-umb="${x.id}" title="Umbenennen">✎</button>
-      </li>`).join("") || `<li class="klein">Noch keine Variante. Lege eine an und klicke Punkte in die Karte.</li>`}</ul>
+      </li>`).join("") || `<li class="klein">Noch keine Variante. Lege eine an und klicke Punkte in die Karte – oder lass dir unten einen Trassenvorschlag rechnen.</li>`}</ul>
     <div class="zeile" style="margin-top:8px">
       <button class="btn primaer" id="v-neu">+ Variante</button>
       <button class="btn" id="v-import" title="Trasse aus DORIS (GeoJSON), KML oder GPX">Importieren …</button>
       ${v ? `<button class="btn" id="v-kopie">Kopieren</button><button class="btn gefahr" id="v-weg">Löschen</button>` : ""}
     </div>
+    <h3>Grenzwerte</h3>
+    <div class="zeile"><span class="klein">Längsneigung min</span><input class="feld" id="g-min" type="number" step="0.5" style="width:70px" value="${min * 100}">
+      <span class="klein">max</span><input class="feld" id="g-max" type="number" step="0.5" style="width:70px" value="${max * 100}"><span>%</span></div>
+    <div class="zeile" style="margin-top:6px"><span class="klein">Neigungswechsel max. je Abschnitt (10 m)</span><input class="feld" id="g-wechsel" type="number" step="0.5" style="width:70px" value="${Math.round(wechsel * 1000) / 10}"><span>%</span></div>
+    <div class="zeile" style="margin-top:6px"><span class="klein">Querneigung Gelände max</span><input class="feld" id="g-quer" type="number" step="5" style="width:70px" value="${Math.round(querMax() * 100)}"><span>%</span></div>
+    <h3>Trassenvorschlag</h3>
+    <div class="zeile">
+      <button class="btn ${vw ? "an" : "primaer"}" id="w-vorschlag" ${suchLaeuft ? "disabled" : ""}>${suchLaeuft ? "Suche läuft …" : vw ? "Abbrechen" : "Start und Ziel wählen"}</button>
+      <span class="klein">Zielbereich</span><input class="feld" id="g-zielr" type="number" step="5" style="width:70px" value="${zielRadius()}"><span>m</span>
+    </div>
+    <p class="klein">${vw ? (vorschlagStart ? "Jetzt das <b>Ziel</b> anklicken (Mitte des Zielbereichs)." : "<b>Start</b> anklicken (z. B. Anschluss an die bestehende Straße).")
+      : "Sucht automatisch eine Linie vom Start in den Zielbereich, die die Grenzwerte oben möglichst einhält (Längsneigung, Neigungswechsel, Querneigung), mit Kurven bis ca. 20 m Radius. Ergebnis als neue Variante – im Gelände prüfen."}</p>
     ${v ? `
     <h3>Werkzeuge</h3>
     <div class="zeile">
@@ -189,8 +204,11 @@ function render() {
       <button class="btn ${werkzeug === "nulllinie" ? "an" : ""}" id="w-null">Nulllinie</button>
       <button class="btn" id="w-zurueck" ${v.punkte.length ? "" : "disabled"}>↶ Letzten</button>
       <button class="btn" id="w-umkehren" ${v.punkte.length > 1 ? "" : "disabled"}>⇄ Richtung</button>
+    </div>
+    <div class="zeile" style="margin-top:6px">
       <button class="btn" id="w-anpassen" ${v.punkte.length > 1 && !anpassenLaeuft ? "" : "disabled"}
         title="Knoten um wenige Meter verschieben, bis Längs- und Querneigung in den Grenzwerten liegen. Ergebnis als neue Variante.">${anpassenLaeuft ? "Rechne …" : "Trasse anpassen"}</button>
+      <span class="klein">Verschiebung max</span><input class="feld" id="g-versch" type="number" step="1" style="width:70px" value="${maxVerschiebung()}"><span>m</span>
     </div>
     ${werkzeug === "zeichnen" ? `<p class="klein">Klick in die Karte setzt den nächsten Knoten. Klick nahe an der Linie fügt einen Knoten dazwischen ein. Knoten ziehen zum Verschieben, antippen zum Löschen.</p>` : ""}
     ${werkzeug === "nulllinie" ? `<div class="zeile" style="margin-top:8px"><label class="klein">Steigung</label>
@@ -199,13 +217,6 @@ function render() {
       <p class="klein">${nullStart ? "Jetzt das <b>Ziel</b> anklicken." : v.punkte.length ? "Ziel anklicken – die Linie startet am Ende der Variante. Oder zuerst <b>Shift</b> + Klick für einen neuen Start." : "<b>Start</b> anklicken, dann das Ziel."}
       Die Linie folgt dem Gelände mit gleichbleibender Steigung (wie mit dem Stechzirkel auf der Schichtenkarte).
       Bleibt sie vor dem Ziel stehen, ist dort eine Kehre nötig: einfach das nächste Ziel in die Gegenrichtung anklicken.</p>` : ""}
-    <h3>Grenzwerte Längsneigung</h3>
-    <div class="zeile"><span class="klein">min</span><input class="feld" id="g-min" type="number" step="0.5" style="width:80px" value="${min * 100}">
-      <span class="klein">max</span><input class="feld" id="g-max" type="number" step="0.5" style="width:80px" value="${max * 100}"><span>%</span></div>
-    <div class="zeile" style="margin-top:6px"><span class="klein">Neigungswechsel max. je Abschnitt (10 m)</span><input class="feld" id="g-wechsel" type="number" step="0.5" style="width:80px" value="${Math.round(grenzen().wechsel * 1000) / 10}"><span>%</span></div>
-    <h3>Trasse anpassen</h3>
-    <div class="zeile"><span class="klein">Querneigung Gelände max</span><input class="feld" id="g-quer" type="number" step="5" style="width:80px" value="${Math.round(querMax() * 100)}"><span>%</span>
-      <span class="klein">Verschiebung max</span><input class="feld" id="g-versch" type="number" step="1" style="width:70px" value="${maxVerschiebung()}"><span>m</span></div>
     <div id="analyse"><p class="klein">${v.punkte.length < 2 ? "Mindestens zwei Knoten setzen." : "Rechne …"}</p></div>
     <label class="lab">Notiz zur Variante</label>
     <textarea class="feld" id="v-notiz">${esc(v.notiz || "")}</textarea>` : ""}
@@ -223,6 +234,14 @@ function render() {
     try { await (await import("./daten.js")).importiere(); render(); }
     catch (e) { toast("Import fehlgeschlagen: " + e.message, 6000); }
   };
+  $("#g-min", panel).onchange = e => { app.projekt.weg.laengsneigung_min = +e.target.value / 100; geaendert("plan"); };
+  $("#g-max", panel).onchange = e => { app.projekt.weg.laengsneigung_max = +e.target.value / 100; geaendert("plan"); };
+  $("#g-wechsel", panel).onchange = e => { app.projekt.weg.neigungswechsel_max = (parseFloat(e.target.value) || 3) / 100; geaendert("plan"); };
+  $("#g-quer", panel).onchange = e => { app.projekt.weg.querneigung_max = (parseFloat(e.target.value) || 100) / 100; geaendert("einstellung"); };
+  $("#g-zielr", panel).onchange = e => { app.projekt.weg.zielradius_m = Math.max(5, parseFloat(e.target.value) || 20); geaendert("einstellung"); };
+  $("#w-vorschlag", panel).onclick = () => {
+    werkzeug = vw ? null : "vorschlag"; vorschlagStart = null; startMarker?.remove(); startMarker = null; render();
+  };
   if (!v) return;
   $("#v-kopie", panel).onclick = () => neueVariante(v.name + " (Kopie)", v.punkte.map(p => p.slice()));
   $("#v-weg", panel).onclick = async () => {
@@ -233,10 +252,7 @@ function render() {
   $("#w-null", panel).onclick = () => { werkzeug = werkzeug === "nulllinie" ? null : "nulllinie"; nullStart = null; render(); };
   $("#w-zurueck", panel).onclick = () => { v.punkte.pop(); geaendert("plan"); render(); };
   $("#w-umkehren", panel).onclick = () => { v.punkte.reverse(); geaendert("plan"); };
-  const ng = $("#n-g", panel); if (ng) ng.onchange = () => { app.projekt.plan.nullG = +ng.value; geaendert("einstellung"); };  $("#g-min", panel).onchange = e => { app.projekt.weg.laengsneigung_min = +e.target.value / 100; geaendert("plan"); };
-  $("#g-max", panel).onchange = e => { app.projekt.weg.laengsneigung_max = +e.target.value / 100; geaendert("plan"); };
-  $("#g-wechsel", panel).onchange = e => { app.projekt.weg.neigungswechsel_max = (parseFloat(e.target.value) || 3) / 100; geaendert("plan"); };
-  $("#g-quer", panel).onchange = e => { app.projekt.weg.querneigung_max = (parseFloat(e.target.value) || 100) / 100; geaendert("einstellung"); };
+  const ng = $("#n-g", panel); if (ng) ng.onchange = () => { app.projekt.plan.nullG = +ng.value; geaendert("einstellung"); };
   $("#g-versch", panel).onchange = e => { app.projekt.weg.verschiebung_max_m = Math.max(1, parseFloat(e.target.value) || 15); geaendert("einstellung"); };
   $("#w-anpassen", panel).onclick = () => trasseAnpassen(v);
   $("#v-notiz", panel).oninput = entprellt(e => { v.notiz = e.target.value; geaendert("notiz"); }, 500);
@@ -250,89 +266,142 @@ function neueVariante(name, punkte = []) {
 }
 
 // ---------- Trasse anpassen ----------
+const TMP = "__bewertung";
+
+/** Strafpunkte einer Linie nach den Grenzwerten (gleiche Analyse wie im Panel: DGM 10 m, Stücke à 10 m) */
+async function bewerte(pts) {
+  const { max, min, wechsel } = grenzen(), qMax = querMax();
+  const d = await analysiere({ id: TMP, punkte: pts });
+  let c = d.luecke ? 1e6 : 0;
+  for (const x of d.stuecke) {
+    const g = Math.abs(x.g), L = x.bis - x.von;
+    if (g > max) c += (g - max) * 100 * L * 3;
+    if (g < min) c += (min - g) * 100 * L * 0.1;
+  }
+  for (const p of d.s) if (p.quer > qMax) c += (p.quer - qMax) * 100 * 2.5;
+  for (const k of d.knicke) if (k.dg > wechsel) c += (k.dg - wechsel) * 100 * 15;
+  return { c, d };
+}
+
 /**
- * Verschiebt die Knoten einer Variante schrittweise (je 1–3 m quer, 2 m längs), bis die Längsneigung in den
- * Grenzwerten liegt und möglichst wenig Gelände über der zulässigen Querneigung berührt wird.
- * Anfang und Ende bleiben fest, kein Knoten entfernt sich mehr als `verschiebung_max_m` von der Ausgangslinie.
- * Bewertet wird mit derselben Analyse wie im Panel (DGM 10 m, Stücke à 10 m). Ergebnis als neue Variante.
+ * Verschiebt die Knoten schrittweise (je 1–3 m quer, 2 m längs), solange die Bewertung besser wird.
+ * Anfang und Ende bleiben fest, kein Knoten entfernt sich mehr als V Meter von der Bezugslinie `ref`.
  */
+async function verbessere(pts0, ref, V, zeit = 60000) {
+  const t0 = performance.now();
+  const g0 = pts0.map(zuGK), dicht = [pts0[0]];          // verdichten: Knoten höchstens 15 m auseinander
+  for (let i = 1; i < g0.length; i++) {
+    const n = Math.ceil(abstand(g0[i - 1], g0[i]) / 15);
+    for (let k = 1; k < n; k++) dicht.push(zuWGS([g0[i - 1][0] + (g0[i][0] - g0[i - 1][0]) * k / n, g0[i - 1][1] + (g0[i][1] - g0[i - 1][1]) * k / n]));
+    dicht.push(pts0[i]);
+  }
+  let pts = dicht, best = (await bewerte(pts)).c;
+  const ZUEGE = [[-3, 0], [-2, 0], [-1, 0], [1, 0], [2, 0], [3, 0], [0, -2], [0, 2]];
+  for (let pass = 0; pass < 40 && performance.now() - t0 < zeit; pass++) {
+    let besser = false;
+    for (let i = 1; i < pts.length - 1 && performance.now() - t0 < zeit; i++) {
+      const a = zuGK(pts[i - 1]), b = zuGK(pts[i + 1]), c = zuGK(pts[i]);
+      const L = abstand(a, b) || 1, tx = (b[0] - a[0]) / L, ty = (b[1] - a[1]) / L;
+      let bi = null;
+      for (const [q, l] of ZUEGE) {
+        const neu = zuWGS([c[0] - ty * q + tx * l, c[1] + tx * q + ty * l]);
+        if (aufLinie(neu, ref).abstand > V) continue;
+        const kand = pts.slice(); kand[i] = neu;
+        const s = (await bewerte(kand)).c;
+        if (s < best - 0.01 && (!bi || s < bi.s)) bi = { s, kand };
+      }
+      if (bi) { best = bi.s; pts = bi.kand; besser = true; }
+    }
+    if (!besser) break;
+  }
+  const einfach = vereinfache(pts, 0.5);                  // überflüssige Knoten weglassen, wenn nicht schlechter
+  if ((await bewerte(einfach)).c <= best + 1) pts = einfach;
+  return pts;
+}
+
+/** Kurzbeschreibung einer Analyse für Notiz und Meldungen */
+function kennwerte(d) {
+  const { max, min, wechsel } = grenzen(), fq = querMax() * 100;
+  return `${fmt(d.L)} m, max. ${fmt(d.gMax * 100, 1)} %, ${fmt(d.ueberMax)} m über ${fmt(max * 100, 1)} %, ${fmt(d.unterMin)} m unter ${fmt(min * 100, 1)} %, ` +
+    `${d.wechselUeber} Knicke über ${fmt(wechsel * 100, 1)} % (max. ${fmt(d.wechselMax * 100, 1)} %), ${fmt(d.s.filter(p => p.quer > querMax()).length * 5)} m Gelände über ${fmt(fq)} %`;
+}
+function grenzText() {
+  const { max, min, wechsel } = grenzen();
+  return `Grenzwerte ${fmt(min * 100, 1)}–${fmt(max * 100, 1)} %, Neigungswechsel max. ${fmt(wechsel * 100, 1)} %, Querneigung max. ${fmt(querMax() * 100)} %`;
+}
+function restText(d) {
+  const { max, wechsel } = grenzen(), rest = [], ueberQ = d.s.filter(p => p.quer > querMax()).length * 5;
+  if (d.wechselUeber > 0) rest.push(`${d.wechselUeber} Knicke über ${fmt(wechsel * 100, 1)} % Neigungswechsel`);
+  if (d.ueberMax > 0) rest.push(`${fmt(d.ueberMax)} m über ${fmt(max * 100, 1)} %`);
+  if (ueberQ > 0) rest.push(`${fmt(ueberQ)} m in Gelände über ${fmt(querMax() * 100)} %`);
+  return rest.length ? ` – noch ${rest.join(", ")}` : " – alles in den Grenzwerten";
+}
+
 async function trasseAnpassen(v) {
   if (anpassenLaeuft || v.punkte.length < 2) return;
   anpassenLaeuft = true; render(); toast("Trasse wird angepasst …", 60000);
-  const TMP = "__anpassen", t0 = performance.now(), ZEIT = 60000;
   try {
-    const { max, min, wechsel } = grenzen(), qMax = querMax(), V = maxVerschiebung(), orig = v.punkte.map(p => p.slice());
-    const bewerte = async pts => {
-      const d = await analysiere({ id: TMP, punkte: pts });
-      let c = d.luecke ? 1e6 : 0;
-      for (const x of d.stuecke) {
-        const g = Math.abs(x.g), L = x.bis - x.von;
-        if (g > max) c += (g - max) * 100 * L * 3;
-        if (g < min) c += (min - g) * 100 * L * 0.1;
-      }
-      for (const p of d.s) if (p.quer > qMax) c += (p.quer - qMax) * 100 * 2.5;
-      for (const k of d.knicke) if (k.dg > wechsel) c += (k.dg - wechsel) * 100 * 15;
-      return { c, d };
-    };
-    // 1. verdichten: Knoten höchstens 15 m auseinander, damit die Linie dem Gelände folgen kann
-    const g0 = orig.map(zuGK), dicht = [orig[0]];
-    for (let i = 1; i < g0.length; i++) {
-      const n = Math.ceil(abstand(g0[i - 1], g0[i]) / 15);
-      for (let k = 1; k < n; k++) dicht.push(zuWGS([g0[i - 1][0] + (g0[i][0] - g0[i - 1][0]) * k / n, g0[i - 1][1] + (g0[i][1] - g0[i - 1][1]) * k / n]));
-      dicht.push(orig[i]);
-    }
-    // 2. Knoten einzeln verschieben, solange es besser wird
-    let pts = dicht, best = (await bewerte(pts)).c;
+    const V = maxVerschiebung(), orig = v.punkte.map(p => p.slice());
     const vorher = (await bewerte(orig)).d;
-    const ZUEGE = [[-3, 0], [-2, 0], [-1, 0], [1, 0], [2, 0], [3, 0], [0, -2], [0, 2]];
-    for (let pass = 0; pass < 40 && performance.now() - t0 < ZEIT; pass++) {
-      let besser = false;
-      for (let i = 1; i < pts.length - 1 && performance.now() - t0 < ZEIT; i++) {
-        const a = zuGK(pts[i - 1]), b = zuGK(pts[i + 1]), c = zuGK(pts[i]);
-        const L = abstand(a, b) || 1, tx = (b[0] - a[0]) / L, ty = (b[1] - a[1]) / L;
-        let bi = null;
-        for (const [q, l] of ZUEGE) {
-          const neu = zuWGS([c[0] - ty * q + tx * l, c[1] + tx * q + ty * l]);
-          if (aufLinie(neu, orig).abstand > V) continue;
-          const kand = pts.slice(); kand[i] = neu;
-          const s = (await bewerte(kand)).c;
-          if (s < best - 0.01 && (!bi || s < bi.s)) bi = { s, kand };
-        }
-        if (bi) { best = bi.s; pts = bi.kand; besser = true; }
-      }
-      if (!besser) break;
-    }
-    // 3. überflüssige Knoten weglassen, wenn das Ergebnis dadurch nicht schlechter wird
-    const einfach = vereinfache(pts, 0.5);
-    if ((await bewerte(einfach)).c <= best + 1) pts = einfach;
+    const pts = await verbessere(orig, orig, V);
     const nachher = (await bewerte(pts)).d;
     analysen.delete(TMP);
-    const ueberQ = d => d.s.filter(p => p.quer > qMax).length * 5;
-    const fq = qMax * 100;
-    const notiz = `Automatisch angepasst aus „${v.name}“ (DGM 10 m, Grenzwerte ${fmt(min * 100, 1)}–${fmt(max * 100, 1)} %, ` +
-      `Neigungswechsel max. ${fmt(wechsel * 100, 1)} %, Querneigung max. ${fmt(fq)} %, Verschiebung max. ${fmt(V)} m).\n` +
-      `Vorher: max. ${fmt(vorher.gMax * 100, 1)} %, ${fmt(vorher.ueberMax)} m über ${fmt(max * 100, 1)} %, ${fmt(vorher.unterMin)} m unter ${fmt(min * 100, 1)} %, ${vorher.wechselUeber} Knicke über ${fmt(wechsel * 100, 1)} % (max. ${fmt(vorher.wechselMax * 100, 1)} %), ${fmt(ueberQ(vorher))} m Gelände über ${fmt(fq)} %.\n` +
-      `Nachher: max. ${fmt(nachher.gMax * 100, 1)} %, ${fmt(nachher.ueberMax)} m über ${fmt(max * 100, 1)} %, ${fmt(nachher.unterMin)} m unter ${fmt(min * 100, 1)} %, ${nachher.wechselUeber} Knicke über ${fmt(wechsel * 100, 1)} % (max. ${fmt(nachher.wechselMax * 100, 1)} %), ${fmt(ueberQ(nachher))} m Gelände über ${fmt(fq)} %.`;
     anpassenLaeuft = false;
     neueVariante(`${v.name} (angepasst)`, pts);
-    aktiv().notiz = notiz; geaendert("notiz"); render();
-    const rest = [];
-    if (nachher.wechselUeber > 0) rest.push(`${nachher.wechselUeber} Knicke über ${fmt(wechsel * 100, 1)} % Neigungswechsel`);
-    if (nachher.ueberMax > 0) rest.push(`${fmt(nachher.ueberMax)} m bleiben über ${fmt(max * 100, 1)} %`);
-    if (ueberQ(nachher) > 0) rest.push(`${fmt(ueberQ(nachher))} m liegen in Gelände über ${fmt(fq)} %`);
-    toast(`Neue Variante angelegt: max. ${fmt(nachher.gMax * 100, 1)} % Längsneigung` +
-      (rest.length ? ` – ${rest.join(", ")}. Mit mehr Verschiebung oder einer anderen Linienführung (Kehre) nochmals versuchen.` : " – alles in den Grenzwerten."), 9000);
+    aktiv().notiz = `Automatisch angepasst aus „${v.name}“ (DGM 10 m, ${grenzText()}, Verschiebung max. ${fmt(V)} m).\n` +
+      `Vorher: ${kennwerte(vorher)}.\nNachher: ${kennwerte(nachher)}.`;
+    geaendert("notiz"); render();
+    toast(`Neue Variante angelegt: max. ${fmt(nachher.gMax * 100, 1)} % Längsneigung${restText(nachher)}.`, 9000);
   } catch (err) {
-    analysen.delete(TMP);
     toast("Anpassen fehlgeschlagen: " + err.message, 6000);
   } finally {
+    analysen.delete(TMP);
     if (anpassenLaeuft) { anpassenLaeuft = false; render(); }
   }
 }
 
+// ---------- Trassenvorschlag ----------
+async function trassenVorschlag(startLL, zielLL) {
+  suchLaeuft = true; werkzeug = null; render();
+  try {
+    const { max, min, wechsel } = grenzen();
+    toast("Trassenvorschlag: Höhenmodell wird geladen …", 120000);
+    const r = await sucheTrasse(startLL, zielLL, {
+      max, min, wechsel, qMax: querMax(), zielRadius: zielRadius(),
+      fortschritt: n => toast(`Trassenvorschlag: ${fmt(n)} Varianten geprüft …`, 120000),
+    });
+    toast("Trassenvorschlag gefunden – wird geglättet …", 120000);
+    const pts = await verbessere(r.ll, r.ll, 8, 30000);
+    const d = (await bewerte(pts)).d;
+    analysen.delete(TMP);
+    const nr = P().varianten.filter(x => x.name.startsWith("Vorschlag")).length + 1;
+    suchLaeuft = false;
+    neueVariante(`Vorschlag ${nr}`, pts);
+    aktiv().notiz = `Automatischer Trassenvorschlag (DGM 10 m, ${grenzText()}, Zielbereich ${fmt(zielRadius())} m).\n` +
+      `Ergebnis: ${kennwerte(d)}.\nIm Gelände prüfen; Kehren und Anschlüsse von Hand nacharbeiten.`;
+    geaendert("notiz"); render();
+    toast(`Vorschlag ${nr}: ${fmt(d.L)} m, max. ${fmt(d.gMax * 100, 1)} %${restText(d)}.`, 10000);
+  } catch (err) {
+    toast("Trassenvorschlag: " + err.message, 9000);
+  } finally {
+    analysen.delete(TMP);
+    startMarker?.remove(); startMarker = null; vorschlagStart = null;
+    if (suchLaeuft) { suchLaeuft = false; render(); }
+  }
+}
+
 async function kartenKlick(e) {
-  const v = aktiv(); if (!v || !werkzeug) return;
   const ll = e.lngLat.toArray();
+  if (werkzeug === "vorschlag") {
+    if (!vorschlagStart) {
+      vorschlagStart = ll;
+      const el = document.createElement("div"); el.className = "knoten erster"; el.style.setProperty("--k", "#1565c0");
+      startMarker = new maplibregl.Marker({ element: el }).setLngLat(ll).addTo(karte);
+      render();
+    } else trassenVorschlag(vorschlagStart, ll);
+    return;
+  }
+  const v = aktiv(); if (!v || !werkzeug) return;
   if (werkzeug === "zeichnen") {
     const i = einfuegeStelle(e.point, v);
     if (i > 0) v.punkte.splice(i, 0, ll); else v.punkte.push(ll);
