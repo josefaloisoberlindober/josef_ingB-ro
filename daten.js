@@ -1,7 +1,7 @@
 // Modus „Daten“: Projekte, Export/Import, Offline-Karte, Einstellungen.
 import { app, geaendert, oeffneProjekt, neuesProjekt } from "./main.js";
 import { karte, KACHEL_QUELLEN, ebenen } from "./karte.js";
-import { stationen, fmt } from "./geo.js";
+import { stationen, fmt, zuWGS } from "./geo.js";
 import { $, esc, toast, frage, eingabe, herunterladen, dateiWaehlen } from "./ui.js";
 import * as store from "./store.js";
 
@@ -29,7 +29,7 @@ async function render() {
     <p class="klein">Export erzeugt ein ZIP: <b>feldbuch.json</b> (ganzes Projekt zum Wiedereinlesen), <b>projekt.json</b> + <b>trasse.csv</b> (SW-Maps-Format, direkt für <code>01_aufbereitung.py</code>), <b>planung.geojson</b> und die Fotos. Am iPad öffnet sich das Teilen-Menü (AirDrop, Dateien).</p>
     <div class="zeile"><button class="btn primaer" id="x-export">Projekt exportieren</button>
       <button class="btn" id="x-import">Importieren …</button></div>
-    <p class="klein">Import: Projekt-ZIP, SW-Maps-CSV (z. B. später RTK-Punkte mit dem ArduSimple) oder GeoJSON (Trasse aus DORIS) als Variante.</p>
+    <p class="klein">Import: Projekt-ZIP, SW-Maps-CSV (z. B. später RTK-Punkte mit dem ArduSimple) , GeoJSON, KML oder GPX (z. B. Trasse aus DORIS) als Variante.</p>
 
     <h3>Offline-Karte</h3>
     <p class="klein">Vor der Begehung mit WLAN speichern. Gespeichert wird der aktuelle Kartenausschnitt (oder das Projektgebiet).</p>
@@ -227,15 +227,17 @@ export async function baueExport(p) {
 }
 
 // ---------- Import ----------
-async function importiere() {
-  const f = await dateiWaehlen(".zip,.csv,.json,.geojson,application/zip,text/csv,application/json");
+export async function importiere() {
+  const f = await dateiWaehlen(".zip,.csv,.json,.geojson,.kml,.gpx");
   if (f) await importDatei(f);
 }
 export async function importDatei(f) {
   const n = f.name.toLowerCase();
   if (n.endsWith(".zip")) return importZip(f);
   if (n.endsWith(".csv")) return importCSV(await f.text());
-  return importGeoJSON(JSON.parse(await f.text()), f.name);
+  if (n.endsWith(".kml")) return importLinien(ausXML(await f.text(), "kml"), f.name);
+  if (n.endsWith(".gpx")) return importLinien(ausXML(await f.text(), "gpx"), f.name);
+  return importLinien(ausGeoJSON(JSON.parse(await f.text())), f.name);
 }
 
 async function importZip(f) {
@@ -304,20 +306,69 @@ async function importCSV(text) {
   const b = new maplibregl.LngLatBounds(); neu.forEach(q => b.extend([q.lon, q.lat])); karte.fitBounds(b, { padding: 60, maxZoom: 17 });
 }
 
-function importGeoJSON(g, dateiname) {
+// Koordinaten vereinheitlichen: WGS84 bleibt, GK M31 (EPSG:31255) und Web-Mercator werden umgerechnet
+function zuLonLat([x, y]) {
+  if (Math.abs(x) <= 180 && Math.abs(y) <= 90) return [x, y];
+  if (Math.abs(y) > 2e6) {                                    // Web-Mercator (EPSG:3857)
+    return [x / 6378137 * 180 / Math.PI, (2 * Math.atan(Math.exp(y / 6378137)) - Math.PI / 2) * 180 / Math.PI];
+  }
+  return zuWGS([x, y]);                                       // GK M31
+}
+
+/** GeoJSON (z. B. DORIS-Zeichnung) → Linien und Punkte */
+function ausGeoJSON(g) {
   const feats = g.type === "FeatureCollection" ? g.features : g.type === "Feature" ? [g] : [{ type: "Feature", properties: {}, geometry: g }];
-  const linien = [];
+  const linien = [], punkte = []; let mess = 0;
   for (const f of feats) {
-    const gm = f.geometry; if (!gm) continue;
-    if (gm.type === "LineString") linien.push([f.properties?.name, gm.coordinates]);
-    if (gm.type === "MultiLineString") gm.coordinates.forEach(c => linien.push([f.properties?.name, c]));
+    const gm = f.geometry, pr = f.properties || {}; if (!gm) continue;
+    if (pr.woType === "MEASURE_LINE" || pr._meta?.tool === "measure") { mess++; continue; }   // DORIS-Messstrecken
+    const name = pr.name || pr.Name || (typeof pr.text === "string" ? pr.text : null) || pr._meta?.text || null;
+    if (gm.type === "LineString") linien.push([name, gm.coordinates]);
+    if (gm.type === "MultiLineString") gm.coordinates.forEach(c => linien.push([name, c]));
+    if (gm.type === "Point") punkte.push([name, gm.coordinates]);
   }
-  if (!linien.length) throw new Error("Keine Linien in der Datei");
+  return { linien, punkte, mess };
+}
+
+/** KML (DORIS, Google Earth, SW Maps) und GPX → Linien und Punkte */
+function ausXML(text, art) {
+  const d = new DOMParser().parseFromString(text, "application/xml");
+  if (d.querySelector("parsererror")) throw new Error("Datei ist kein gültiges " + art.toUpperCase());
+  const linien = [], punkte = [];
+  const kmlKoord = s => s.trim().split(/\s+/).map(t => t.split(",").map(Number)).filter(c => c.length >= 2 && isFinite(c[0]) && isFinite(c[1]));
+  if (art === "kml") {
+    for (const pm of d.getElementsByTagName("Placemark")) {
+      const name = pm.getElementsByTagName("name")[0]?.textContent?.trim() || null;
+      for (const ls of pm.getElementsByTagName("LineString")) linien.push([name, kmlKoord(ls.getElementsByTagName("coordinates")[0]?.textContent || "")]);
+      for (const pt of pm.getElementsByTagName("Point")) { const c = kmlKoord(pt.getElementsByTagName("coordinates")[0]?.textContent || ""); if (c[0]) punkte.push([name, c[0]]); }
+    }
+  } else {
+    const pt = e => [parseFloat(e.getAttribute("lon")), parseFloat(e.getAttribute("lat"))];
+    for (const t of [...d.getElementsByTagName("trk"), ...d.getElementsByTagName("rte")]) {
+      const name = t.getElementsByTagName("name")[0]?.textContent?.trim() || null;
+      const segs = t.tagName === "trk" ? [...t.getElementsByTagName("trkseg")] : [t];
+      for (const s of segs) linien.push([name, [...s.getElementsByTagName(t.tagName === "trk" ? "trkpt" : "rtept")].map(pt)]);
+    }
+    for (const w of d.getElementsByTagName("wpt")) punkte.push([w.getElementsByTagName("name")[0]?.textContent?.trim() || null, pt(w)]);
+  }
+  return { linien, punkte };
+}
+
+/** Linien als Varianten übernehmen; reine Punktdateien auf Wunsch zu einer Linie verbinden */
+async function importLinien({ linien, punkte, mess = 0 }, dateiname) {
+  linien = linien.map(([n, c]) => [n, c.map(zuLonLat).filter(p => isFinite(p[0]) && isFinite(p[1]))]).filter(([, c]) => c.length > 1);
+  const basis = dateiname.replace(/\.[^.]+$/, "").replace(/^GeoJSON_weboffice.*$/i, "DORIS-Zeichnung");
+  if (!linien.length) {
+    if (punkte.length < 2) throw new Error(mess ? `nur ${mess} DORIS-Messstrecke(n), keine gezeichnete Trasse` : "keine Linien oder Punkte in der Datei");
+    if (!(await frage(`Keine Linie gefunden, aber ${punkte.length} Punkte. In der gespeicherten Reihenfolge zu einer Variante verbinden?`, "Verbinden", "Abbrechen"))) return;
+    linien = [[basis, punkte.map(([, c]) => zuLonLat(c))]];
+  }
   const vs = app.projekt.plan.varianten, F = ["#c0392b", "#7b1fa2", "#d35400", "#00897b", "#283593", "#6d4c41"];
-  for (const [name, c] of linien) {
-    const v = { id: store.neueId(), name: name || dateiname.replace(/\.[^.]+$/, ""), farbe: F[vs.length % F.length], punkte: c.map(p => [p[0], p[1]]), notiz: "importiert" };
+  linien.forEach(([name, c], i) => {
+    const v = { id: store.neueId(), name: name || (linien.length > 1 ? `${basis} ${i + 1}` : basis), farbe: F[vs.length % F.length],
+      punkte: c.map(p => [p[0], p[1]]), notiz: "importiert aus " + dateiname };
     vs.push(v); app.projekt.plan.aktiv = v.id;
-  }
-  geaendert("import"); toast(`${linien.length} Linie(n) als Variante importiert`);
-  const b = new maplibregl.LngLatBounds(); linien.forEach(([, c]) => c.forEach(p => b.extend([p[0], p[1]]))); karte.fitBounds(b, { padding: 60, maxZoom: 17 });
+  });
+  geaendert("import"); toast(`${linien.length} Linie(n) als Variante importiert – unter „Planen“ auswerten`, 5000);
+  const b = new maplibregl.LngLatBounds(); linien.forEach(([, c]) => c.forEach(p => b.extend(p))); karte.fitBounds(b, { padding: 60, maxZoom: 17 });
 }

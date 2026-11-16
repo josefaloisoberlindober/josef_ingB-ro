@@ -171,6 +171,7 @@ function render() {
       </li>`).join("") || `<li class="klein">Noch keine Variante. Lege eine an und klicke Punkte in die Karte.</li>`}</ul>
     <div class="zeile" style="margin-top:8px">
       <button class="btn primaer" id="v-neu">+ Variante</button>
+      <button class="btn" id="v-import" title="Trasse aus DORIS (GeoJSON), KML oder GPX">Importieren …</button>
       ${v ? `<button class="btn" id="v-kopie">Kopieren</button><button class="btn gefahr" id="v-weg">Löschen</button>` : ""}
     </div>
     ${v ? `
@@ -204,6 +205,10 @@ function render() {
     if (n) { x.name = n; geaendert("plan"); render(); }
   });
   $("#v-neu", panel).onclick = () => neueVariante();
+  $("#v-import", panel).onclick = async () => {
+    try { await (await import("./daten.js")).importiere(); render(); }
+    catch (e) { toast("Import fehlgeschlagen: " + e.message, 6000); }
+  };
   if (!v) return;
   $("#v-kopie", panel).onclick = () => neueVariante(v.name + " (Kopie)", v.punkte.map(p => p.slice()));
   $("#v-weg", panel).onclick = async () => {
