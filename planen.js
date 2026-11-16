@@ -1,6 +1,6 @@
 // Modus „Planen“: Trassenvarianten zeichnen, Nulllinie, Längs- und Querneigung aus dem DGM.
 import { app, geaendert } from "./main.js";
-import { karte, setzeDaten } from "./karte.js";
+import { karte, setzeDaten, kreis } from "./karte.js";
 import { hoehenGK } from "./dem.js";
 import { zuGK, zuWGS, abstand, teile, vereinfache, aufLinie, fmt, hm } from "./geo.js";
 import { $, $$, esc, toast, frage, eingabe, sheet, entprellt } from "./ui.js";
@@ -17,7 +17,8 @@ const grenzen = () => ({ max: app.projekt.weg.laengsneigung_max ?? 0.10, min: ap
   wechsel: app.projekt.weg.neigungswechsel_max ?? 0.03 });
 const querMax = () => app.projekt.weg.querneigung_max ?? 1.0;
 const maxVerschiebung = () => app.projekt.weg.verschiebung_max_m ?? 15;
-let anpassenLaeuft = false, suchLaeuft = false, vorschlagStart = null, startMarker = null;
+let anpassenLaeuft = false, suchLaeuft = false;
+let vorschlagPunkte = [], vorschlagMarker = [];   // [{ll, r}] – erster = Start, letzter = Ziel, dazwischen Zwischenziele
 const zielRadius = () => app.projekt.weg.zielradius_m ?? 20;
 
 export function farbeNeigung(g) {
@@ -45,12 +46,24 @@ export function zeichnePlanung() {
       type: "Feature", properties: { farbe: farbeNeigung(s.g) }, geometry: { type: "LineString", coordinates: s.ll },
     })) : [],
   });
+  // Ziel- und Erschließungsbereiche: beim Wählen die neuen, sonst die der aktiven Variante
+  const ziele = werkzeug === "vorschlag" ? vorschlagPunkte.slice(1) : (v?.ziele || []);
+  setzeDaten("plan-ziele", {
+    type: "FeatureCollection",
+    features: ziele.map((z, i) => ({
+      type: "Feature", properties: { name: i === ziele.length - 1 ? "Ziel" : `Z${i + 1}` }, geometry: kreis(z.ll, z.r),
+    })),
+  });
+}
+
+function vorschlagZuruecksetzen() {
+  vorschlagPunkte = []; vorschlagMarker.forEach(m => m.remove()); vorschlagMarker = [];
 }
 
 function setzeKnoten() {
   marker.forEach(m => m.remove()); marker = [];
   const v = aktiv();
-  if (!aktivModus || !v) return;
+  if (!aktivModus || !v || werkzeug === "vorschlag") return;   // beim Wählen der Ziele keine Knoten im Weg
   v.punkte.forEach((ll, i) => {
     const el = document.createElement("div");
     el.className = "knoten" + (i === 0 ? " erster" : ""); el.style.setProperty("--k", v.farbe);
@@ -154,7 +167,7 @@ export function betreten(el) {
   render(); setzeKnoten();
 }
 export function verlassen() {
-  aktivModus = false; werkzeug = null; vorschlagStart = null; startMarker?.remove(); startMarker = null;
+  aktivModus = false; werkzeug = null; vorschlagZuruecksetzen(); zeichnePlanung();
   karte.off("click", kartenKlick); karte.getCanvas().style.cursor = "";
   marker.forEach(m => m.remove()); marker = []; hoverMarker?.remove(); hoverMarker = null;
 }
@@ -191,12 +204,22 @@ function render() {
     <div class="zeile" style="margin-top:6px"><span class="klein">Neigungswechsel max. je Abschnitt (10 m)</span><input class="feld" id="g-wechsel" type="number" step="0.5" style="width:70px" value="${Math.round(wechsel * 1000) / 10}"><span>%</span></div>
     <div class="zeile" style="margin-top:6px"><span class="klein">Querneigung Gelände max</span><input class="feld" id="g-quer" type="number" step="5" style="width:70px" value="${Math.round(querMax() * 100)}"><span>%</span></div>
     <h3>Trassenvorschlag</h3>
+    ${vw ? `
+    <p class="klein">${vorschlagPunkte.length ? "Weitere Punkte anklicken: zuerst die <b>Zwischenziele</b> (Bereiche, die erschlossen werden sollen) in der gewünschten Reihenfolge, zuletzt das <b>Ziel</b>." : "<b>Start</b> anklicken (z. B. Anschluss an die bestehende Straße)."}
+      Die Trasse muss durch jeden Bereich führen. Radius je Bereich unten anpassen.</p>
+    <ul class="liste">${vorschlagPunkte.map((p, i) => `<li>
+        <div class="wachsen"><b>${i === 0 ? "Start" : i === vorschlagPunkte.length - 1 && i > 0 ? "Ziel" : "Zwischenziel " + i}</b></div>
+        ${i ? `<span class="klein">Radius</span><input class="feld" data-zr="${i}" type="number" step="5" min="5" style="width:70px" value="${p.r}"><span class="klein">m</span>` : ""}
+        <button class="btn gefahr" data-zweg="${i}" title="Entfernen">✕</button></li>`).join("")}</ul>
+    <div class="zeile" style="margin-top:8px">
+      <button class="btn primaer" id="w-berechnen" ${vorschlagPunkte.length >= 2 ? "" : "disabled"}>Trasse berechnen</button>
+      <button class="btn" id="w-vorschlag">Abbrechen</button>
+    </div>` : `
     <div class="zeile">
-      <button class="btn ${vw ? "an" : "primaer"}" id="w-vorschlag" ${suchLaeuft ? "disabled" : ""}>${suchLaeuft ? "Suche läuft …" : vw ? "Abbrechen" : "Start und Ziel wählen"}</button>
-      <span class="klein">Zielbereich</span><input class="feld" id="g-zielr" type="number" step="5" style="width:70px" value="${zielRadius()}"><span>m</span>
+      <button class="btn primaer" id="w-vorschlag" ${suchLaeuft ? "disabled" : ""}>${suchLaeuft ? "Suche läuft …" : "Start, Zwischenziele und Ziel wählen"}</button>
+      <span class="klein">Bereich</span><input class="feld" id="g-zielr" type="number" step="5" style="width:70px" value="${zielRadius()}"><span>m</span>
     </div>
-    <p class="klein">${vw ? (vorschlagStart ? "Jetzt das <b>Ziel</b> anklicken (Mitte des Zielbereichs)." : "<b>Start</b> anklicken (z. B. Anschluss an die bestehende Straße).")
-      : "Sucht automatisch eine Linie vom Start in den Zielbereich, die die Grenzwerte oben möglichst einhält (Längsneigung, Neigungswechsel, Querneigung), mit Kurven bis ca. 13 m Radius (Kehren). Ergebnis als neue Variante – im Gelände prüfen."}</p>
+    <p class="klein">Sucht automatisch eine Linie vom Start über die Zwischenziele in den Zielbereich, die die Grenzwerte oben möglichst einhält (Längsneigung, Neigungswechsel, Querneigung), mit Kurven bis ca. 13 m Radius (Kehren). Ergebnis als neue Variante – im Gelände prüfen.</p>`}
     ${v ? `
     <h3>Werkzeuge</h3>
     <div class="zeile">
@@ -238,10 +261,14 @@ function render() {
   $("#g-max", panel).onchange = e => { app.projekt.weg.laengsneigung_max = +e.target.value / 100; geaendert("plan"); };
   $("#g-wechsel", panel).onchange = e => { app.projekt.weg.neigungswechsel_max = (parseFloat(e.target.value) || 3) / 100; geaendert("plan"); };
   $("#g-quer", panel).onchange = e => { app.projekt.weg.querneigung_max = (parseFloat(e.target.value) || 100) / 100; geaendert("einstellung"); };
-  $("#g-zielr", panel).onchange = e => { app.projekt.weg.zielradius_m = Math.max(5, parseFloat(e.target.value) || 20); geaendert("einstellung"); };
-  $("#w-vorschlag", panel).onclick = () => {
-    werkzeug = vw ? null : "vorschlag"; vorschlagStart = null; startMarker?.remove(); startMarker = null; render();
-  };
+  const zr = $("#g-zielr", panel); if (zr) zr.onchange = e => { app.projekt.weg.zielradius_m = Math.max(5, parseFloat(e.target.value) || 20); geaendert("einstellung"); };
+  $("#w-vorschlag", panel).onclick = () => { werkzeug = vw ? null : "vorschlag"; vorschlagZuruecksetzen(); zeichnePlanung(); setzeKnoten(); render(); };
+  const wb = $("#w-berechnen", panel); if (wb) wb.onclick = () => trassenVorschlag(vorschlagPunkte.map(p => ({ ...p })));
+  $$("[data-zr]", panel).forEach(i => i.onchange = () => { vorschlagPunkte[+i.dataset.zr].r = Math.max(5, parseFloat(i.value) || 20); zeichnePlanung(); });
+  $$("[data-zweg]", panel).forEach(b => b.onclick = () => {
+    const i = +b.dataset.zweg; vorschlagPunkte.splice(i, 1); vorschlagMarker[i].remove(); vorschlagMarker.splice(i, 1);
+    vorschlagMarker.forEach((m, k) => m.getElement().className = "knoten" + (k === 0 ? " erster" : "")); zeichnePlanung(); render();
+  });
   if (!v) return;
   $("#v-kopie", panel).onclick = () => neueVariante(v.name + " (Kopie)", v.punkte.map(p => p.slice()));
   $("#v-weg", panel).onclick = async () => {
@@ -361,31 +388,49 @@ async function trasseAnpassen(v) {
 }
 
 // ---------- Trassenvorschlag ----------
-async function trassenVorschlag(startLL, zielLL) {
+async function trassenVorschlag(punkte) {
+  if (punkte.length < 2) return;
   suchLaeuft = true; werkzeug = null; render();
   try {
     const { max, min, wechsel } = grenzen();
     toast("Trassenvorschlag: Höhenmodell wird geladen …", 120000);
-    const r = await sucheTrasse(startLL, zielLL, {
-      max, min, wechsel, qMax: querMax(), zielRadius: zielRadius(),
-      fortschritt: n => toast(`Trassenvorschlag: ${fmt(n)} Varianten geprüft …`, 120000),
-    });
+    // Abschnitt für Abschnitt: Start → Z1 → Z2 → … → Ziel; jeder Abschnitt setzt Richtung und Neigung fort
+    let linie = [punkte[0].ll], richtung = null, neigung = null;
+    for (let i = 1; i < punkte.length; i++) {
+      const cur = linie[linie.length - 1], z = punkte[i];
+      if (abstand(zuGK(cur), zuGK(z.ll)) <= z.r) continue;      // liegt schon im Bereich
+      const was = i === punkte.length - 1 ? "Ziel" : `Zwischenziel ${i}`;
+      let r;
+      try {
+        r = await sucheTrasse(cur, z.ll, {
+          max, min, wechsel, qMax: querMax(), zielRadius: z.r, startRichtung: richtung, startNeigung: neigung,
+          fortschritt: n => toast(`Trassenvorschlag (→ ${was}): ${fmt(n)} Varianten geprüft …`, 120000),
+        });
+      } catch (e) { throw new Error(`Abschnitt → ${was}: ${e.message}`); }
+      linie.push(...r.ll.slice(1)); richtung = r.endRichtung; neigung = r.endNeigung;
+    }
     toast("Trassenvorschlag gefunden – wird geglättet …", 120000);
-    const pts = await verbessere(r.ll, r.ll, 8, 30000);
+    const pts = await verbessere(linie, linie, 8, 30000);
     const d = (await bewerte(pts)).d;
     analysen.delete(TMP);
+    // führt die geglättete Linie noch durch alle Bereiche?
+    const verfehlt = punkte.slice(1).map((z, i) => ({ z, i: i + 1, a: aufLinie(z.ll, pts).abstand })).filter(x => x.a > x.z.r + 1);
     const nr = P().varianten.filter(x => x.name.startsWith("Vorschlag")).length + 1;
     suchLaeuft = false;
     neueVariante(`Vorschlag ${nr}`, pts);
-    aktiv().notiz = `Automatischer Trassenvorschlag (DGM 10 m, ${grenzText()}, Zielbereich ${fmt(zielRadius())} m).\n` +
-      `Ergebnis: ${kennwerte(d)}.\nIm Gelände prüfen; Kehren und Anschlüsse von Hand nacharbeiten.`;
-    geaendert("notiz"); render();
+    const v = aktiv(), nz = punkte.length - 2;
+    v.ziele = punkte.slice(1).map(p => ({ ll: p.ll, r: p.r }));
+    v.notiz = `Automatischer Trassenvorschlag (DGM 10 m, ${grenzText()}${nz ? `, ${nz} Zwischenziel${nz > 1 ? "e" : ""}` : ""}).\n` +
+      `Ergebnis: ${kennwerte(d)}.` +
+      (verfehlt.length ? `\nAchtung: ${verfehlt.map(x => (x.i === punkte.length - 1 ? "Ziel" : "Z" + x.i) + ` um ${fmt(x.a - x.z.r)} m verfehlt`).join(", ")}.` : "") +
+      `\nIm Gelände prüfen; Kehren und Anschlüsse von Hand nacharbeiten.`;
+    geaendert("notiz"); zeichnePlanung(); render();
     toast(`Vorschlag ${nr}: ${fmt(d.L)} m, max. ${fmt(d.gMax * 100, 1)} %${restText(d)}.`, 10000);
   } catch (err) {
-    toast("Trassenvorschlag: " + err.message, 9000);
+    toast("Trassenvorschlag: " + err.message, 10000);
   } finally {
     analysen.delete(TMP);
-    startMarker?.remove(); startMarker = null; vorschlagStart = null;
+    vorschlagZuruecksetzen(); zeichnePlanung();
     if (suchLaeuft) { suchLaeuft = false; render(); }
   }
 }
@@ -393,12 +438,11 @@ async function trassenVorschlag(startLL, zielLL) {
 async function kartenKlick(e) {
   const ll = e.lngLat.toArray();
   if (werkzeug === "vorschlag") {
-    if (!vorschlagStart) {
-      vorschlagStart = ll;
-      const el = document.createElement("div"); el.className = "knoten erster"; el.style.setProperty("--k", "#1565c0");
-      startMarker = new maplibregl.Marker({ element: el }).setLngLat(ll).addTo(karte);
-      render();
-    } else trassenVorschlag(vorschlagStart, ll);
+    vorschlagPunkte.push({ ll, r: vorschlagPunkte.length ? zielRadius() : 0 });
+    const el = document.createElement("div"); el.style.setProperty("--k", "#1565c0");
+    vorschlagMarker.push(new maplibregl.Marker({ element: el }).setLngLat(ll).addTo(karte));
+    vorschlagMarker.forEach((m, k) => m.getElement().className = "knoten" + (k === 0 ? " erster" : ""));
+    zeichnePlanung(); render();
     return;
   }
   const v = aktiv(); if (!v || !werkzeug) return;

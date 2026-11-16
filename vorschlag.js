@@ -14,8 +14,9 @@ const MAX_ZELLEN = 160000;      // Raster 5 m → ca. 2 × 2 km Suchgebiet
 /**
  * @param startLL [lon,lat]  Startpunkt (z. B. Anschluss an die bestehende Straße)
  * @param zielLL  [lon,lat]  Mitte des Zielbereichs
- * @param o {max, min, wechsel, qMax, zielRadius, fortschritt(n)}
- * @returns {ll, L, erreicht}
+ * @param o {max, min, wechsel, qMax, zielRadius, fortschritt(n),
+ *            startRichtung (Azimut rad, optional: Fortsetzung eines vorigen Abschnitts), startNeigung (optional)}
+ * @returns {ll, L, endRichtung, endNeigung}
  */
 export async function sucheTrasse(startLL, zielLL, o) {
   const S = zuGK(startLL), Z = zuGK(zielLL), D = abstand(S, Z), R = Math.max(5, o.zielRadius ?? 20);
@@ -62,8 +63,13 @@ export async function sucheTrasse(startLL, zielLL, o) {
   const heap = new Heap();
   const h0 = H(s[0], s[1]);
   for (let d = 0; d < RICHTUNGEN; d++) {
+    // Fortsetzung: nur Richtungen bis 45° neben der bisherigen, sonst entsteht am Übergang ein Knick
+    if (o.startRichtung != null) {
+      const a = d * 2 * Math.PI / RICHTUNGEN, w = Math.abs(Math.atan2(Math.sin(a - o.startRichtung), Math.cos(a - o.startRichtung)));
+      if (w > Math.PI / 4 + 1e-6) continue;
+    }
     const k = idx(s[0], s[1], d);
-    kosten[k] = 0; px[k] = s[0]; py[k] = s[1]; ph[k] = h0; pg[k] = NaN;
+    kosten[k] = 0; px[k] = s[0]; py[k] = s[1]; ph[k] = h0; pg[k] = o.startNeigung ?? NaN;
     heap.push(heu(s[0], s[1]), k);
   }
 
@@ -112,7 +118,7 @@ export async function sucheTrasse(startLL, zielLL, o) {
   // gleiche Startpunkte (alle Richtungen) zusammenfassen
   const ll = vereinfache(linie.filter((p, i) => i === 0 || abstand(p, linie[i - 1]) > 0.01).map(zuWGS), 1.0);
   let L = 0; for (let i = 1; i < linie.length; i++) L += abstand(linie[i - 1], linie[i]);
-  return { ll, L, erreicht: true, geprueft: n };
+  return { ll, L, geprueft: n, endRichtung: (ziel % RICHTUNGEN) * 2 * Math.PI / RICHTUNGEN, endNeigung: isFinite(pg[ziel]) ? pg[ziel] : null };
 }
 
 /** kleiner Binär-Heap (Priorität, Wert) */

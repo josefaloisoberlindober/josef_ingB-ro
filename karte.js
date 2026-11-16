@@ -46,6 +46,7 @@ export function erstelleKarte() {
         },
         "plan-alle": { type: "geojson", data: leer() },
         "plan-neigung": { type: "geojson", data: leer() },
+        "plan-ziele": { type: "geojson", data: leer() },
         "aufnahme-linie": { type: "geojson", data: leer() },
         "aufnahme-punkte": { type: "geojson", data: leer() },
         position: { type: "geojson", data: leer() },
@@ -63,6 +64,11 @@ export function erstelleKarte() {
         { id: "plan-alle", type: "line", source: "plan-alle",
           paint: { "line-color": ["get", "farbe"], "line-width": ["case", ["get", "aktiv"], 3, 2],
                    "line-opacity": ["case", ["get", "aktiv"], 0.9, 0.55], "line-dasharray": [2, 1.2] } },
+        { id: "plan-ziele", type: "fill", source: "plan-ziele", paint: { "fill-color": "#1565c0", "fill-opacity": 0.12 } },
+        { id: "plan-ziele-rand", type: "line", source: "plan-ziele", paint: { "line-color": "#1565c0", "line-width": 2, "line-dasharray": [2, 1.5] } },
+        { id: "plan-ziele-text", type: "symbol", source: "plan-ziele",
+          layout: { "text-field": ["get", "name"], "text-font": SCHRIFT, "text-size": 12, "text-allow-overlap": true },
+          paint: { "text-color": "#0d3c75", "text-halo-color": "#fff", "text-halo-width": 1.5 } },
         { id: "plan-neigung", type: "line", source: "plan-neigung", layout: { "line-cap": "round" },
           paint: { "line-color": ["get", "farbe"], "line-width": 6, "line-opacity": 0.85 } },
         { id: "aufnahme-linie", type: "line", source: "aufnahme-linie",
@@ -99,6 +105,7 @@ function wendeEbenenAn() {
   for (const b of ["grund", "grau", "ortho"]) v(b, ebenen.basis === b);
   v("gelaende", ebenen.gelaende); v("hl", ebenen.hl); v("hl-text", ebenen.hl);
   v("plan-alle", ebenen.plan); v("plan-neigung", ebenen.plan);
+  for (const id of ["plan-ziele", "plan-ziele-rand", "plan-ziele-text"]) v(id, ebenen.plan);
   for (const id of ["aufnahme-linie", "aufnahme-punkte", "aufnahme-text"]) v(id, ebenen.aufnahme);
   lsSchreiben("ebenen", ebenen);
 }
