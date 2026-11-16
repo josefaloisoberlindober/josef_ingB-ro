@@ -63,14 +63,16 @@ export async function sucheTrasse(startLL, zielLL, o) {
   const heap = new Heap();
   const h0 = H(s[0], s[1]);
   for (let d = 0; d < RICHTUNGEN; d++) {
-    // Fortsetzung: nur Richtungen bis 45° neben der bisherigen, sonst entsteht am Übergang ein Knick
+    // Fortsetzung eines Abschnitts: Richtungswechsel am Übergang kostet (wie eine Kehre im Zwischenziel-Bereich)
+    let k0 = 0;
     if (o.startRichtung != null) {
       const a = d * 2 * Math.PI / RICHTUNGEN, w = Math.abs(Math.atan2(Math.sin(a - o.startRichtung), Math.cos(a - o.startRichtung)));
-      if (w > Math.PI / 4 + 1e-6) continue;
+      const stufen = Math.round(w / (2 * Math.PI / RICHTUNGEN));
+      k0 = Math.max(0, stufen - 3) * 4;
     }
     const k = idx(s[0], s[1], d);
-    kosten[k] = 0; px[k] = s[0]; py[k] = s[1]; ph[k] = h0; pg[k] = o.startNeigung ?? NaN;
-    heap.push(heu(s[0], s[1]), k);
+    kosten[k] = k0; px[k] = s[0]; py[k] = s[1]; ph[k] = h0; pg[k] = o.startNeigung ?? NaN;
+    heap.push(k0 + heu(s[0], s[1]), k);
   }
 
   const { max, min, wechsel, qMax } = o;
