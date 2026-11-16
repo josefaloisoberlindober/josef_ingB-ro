@@ -394,21 +394,12 @@ async function trassenVorschlag(punkte) {
   try {
     const { max, min, wechsel } = grenzen();
     toast("Trassenvorschlag: Höhenmodell wird geladen …", 120000);
-    // Abschnitt für Abschnitt: Start → Z1 → Z2 → … → Ziel; jeder Abschnitt setzt Richtung und Neigung fort
-    let linie = [punkte[0].ll], richtung = null, neigung = null;
-    for (let i = 1; i < punkte.length; i++) {
-      const cur = linie[linie.length - 1], z = punkte[i];
-      if (abstand(zuGK(cur), zuGK(z.ll)) <= z.r) continue;      // liegt schon im Bereich
-      const was = i === punkte.length - 1 ? "Ziel" : `Zwischenziel ${i}`;
-      let r;
-      try {
-        r = await sucheTrasse(cur, z.ll, {
-          max, min, wechsel, qMax: querMax(), zielRadius: z.r, startRichtung: richtung, startNeigung: neigung,
-          fortschritt: n => toast(`Trassenvorschlag (→ ${was}): ${fmt(n)} Varianten geprüft …`, 120000),
-        });
-      } catch (e) { throw new Error(`Abschnitt → ${was}: ${e.message}`); }
-      linie.push(...r.ll.slice(1)); richtung = r.endRichtung; neigung = r.endNeigung;
-    }
+    // eine gemeinsame Suche über alle Bereiche (Start → Z1 → Z2 → … → Ziel)
+    const r = await sucheTrasse(punkte[0].ll, punkte.slice(1), {
+      max, min, wechsel, qMax: querMax(),
+      fortschritt: n => toast(`Trassenvorschlag: ${fmt(n)} Varianten geprüft …`, 120000),
+    });
+    const linie = r.ll;
     toast("Trassenvorschlag gefunden – wird geglättet …", 120000);
     const pts = await verbessere(linie, linie, 8, 30000);
     const d = (await bewerte(pts)).d;

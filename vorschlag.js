@@ -1,33 +1,39 @@
-// Automatischer Trassenvorschlag: günstigste Linie vom Start in den Zielbereich über das Höhenmodell.
+// Automatischer Trassenvorschlag: günstigste Linie vom Start über Zwischenziele in den Zielbereich.
 //
 // Suche (A*) auf einem Gitter aus 10-m-Schritten in 24 Richtungen (15°). Je Schritt darf die Richtung um
-// höchstens 45° drehen (Kurvenradius ca. 13 m, für Kehren); enge Kurven kosten mehr. Bewertet wird wie in der Analyse im Panel: Längsneigung aus
-// dem Gelände je 10 m, Neigungswechsel gegenüber dem vorigen Schritt, Querneigung des Geländes.
-// Alle Grenzwerte sind „weich“ (hohe Strafkosten), damit auch in schwierigem Gelände ein Vorschlag kommt;
-// was übrig bleibt, zeigt die Analyse der neuen Variante.
+// höchstens 45° drehen (Kurvenradius ca. 13 m, für Kehren); enge Kurven kosten mehr. Bewertet wird wie in der
+// Analyse im Panel: Längsneigung aus dem Gelände je 10 m, Neigungswechsel gegenüber dem vorigen Schritt,
+// Querneigung des Geländes. Alle Grenzwerte sind „weich“ (hohe Strafkosten), damit auch in schwierigem Gelände
+// ein Vorschlag kommt; was übrig bleibt, zeigt die Analyse der neuen Variante.
+// Zwischenziele (Bereiche, die erschlossen werden sollen) werden in einer gemeinsamen Suche berücksichtigt:
+// der Zustand merkt sich, welcher Bereich als nächster erreicht werden muss. So wird die ganze Linie
+// gemeinsam optimiert und nicht Abschnitt für Abschnitt (das gäbe Schleifen an den Bereichen).
 import { hoehenGK } from "./dem.js";
 import { zuGK, zuWGS, abstand, vereinfache } from "./geo.js";
 
-const RICHTUNGEN = 24, SCHRITT = 10, ZELLE = 7, RASTER = 5;
-const MAX_ZELLEN = 160000;      // Raster 5 m → ca. 2 × 2 km Suchgebiet
+const RICHTUNGEN = 24, SCHRITT = 10, RASTER = 5;
+const MAX_ZELLEN = 160000;      // Höhenraster 5 m → ca. 2 × 2 km Suchgebiet
+const MAX_ZUSTAENDE = 3e6;      // Speicher ca. 75 MB; bei großen Gebieten wird das Suchgitter gröber
 
 /**
  * @param startLL [lon,lat]  Startpunkt (z. B. Anschluss an die bestehende Straße)
- * @param zielLL  [lon,lat]  Mitte des Zielbereichs
- * @param o {max, min, wechsel, qMax, zielRadius, fortschritt(n),
- *            startRichtung (Azimut rad, optional: Fortsetzung eines vorigen Abschnitts), startNeigung (optional)}
- * @returns {ll, L, endRichtung, endNeigung}
+ * @param ziele   [{ll, r}]  Zwischenziele in Reihenfolge, zuletzt das Ziel (ll = Mitte, r = Radius in m)
+ * @param o {max, min, wechsel, qMax, fortschritt(n)}
+ * @returns {ll, L, geprueft}
  */
-export async function sucheTrasse(startLL, zielLL, o) {
-  const S = zuGK(startLL), Z = zuGK(zielLL), D = abstand(S, Z), R = Math.max(5, o.zielRadius ?? 20);
-  if (D <= R) throw new Error("Start liegt schon im Zielbereich.");
+export async function sucheTrasse(startLL, ziele, o) {
+  if (typeof ziele[0] === "number") ziele = [{ ll: ziele, r: o.zielRadius ?? 20 }];   // ein einzelnes Ziel
+  const S = zuGK(startLL), m = ziele.length;
+  const C = ziele.map(z => zuGK(z.ll)), R = ziele.map(z => Math.max(5, z.r ?? 20));
 
-  // Suchgebiet: Rechteck um Start und Ziel, mit Rand für Umwege und Kehren
-  const rand = Math.max(250, 0.6 * D);
-  const x0 = Math.min(S[0], Z[0]) - rand, y0 = Math.min(S[1], Z[1]) - rand;
-  const nx = Math.ceil((Math.max(S[0], Z[0]) + rand - x0) / RASTER) + 1;
-  const ny = Math.ceil((Math.max(S[1], Z[1]) + rand - y0) / RASTER) + 1;
-  if (nx * ny > MAX_ZELLEN) throw new Error("Start und Ziel liegen zu weit auseinander (bis ca. 1 km Luftlinie möglich). Ziel näher setzen und in Abschnitten planen.");
+  // Suchgebiet: Rechteck um alle Punkte, mit Rand für Umwege und Kehren
+  const alle = [S, ...C], xs = alle.map(p => p[0]), ys = alle.map(p => p[1]);
+  const bx = Math.max(...xs) - Math.min(...xs), by = Math.max(...ys) - Math.min(...ys);
+  let rand = Math.max(250, 0.5 * Math.hypot(bx, by));
+  while (rand > 150 && ((bx + 2 * rand) / RASTER + 1) * ((by + 2 * rand) / RASTER + 1) > MAX_ZELLEN) rand -= 25;
+  const x0 = Math.min(...xs) - rand, y0 = Math.min(...ys) - rand;
+  const nx = Math.ceil((bx + 2 * rand) / RASTER) + 1, ny = Math.ceil((by + 2 * rand) / RASTER) + 1;
+  if (nx * ny > MAX_ZELLEN) throw new Error("Die Punkte liegen zu weit auseinander (Gebiet bis ca. 2 × 2 km). In Abschnitten planen.");
 
   // Geländehöhen im Raster laden
   const pts = new Array(nx * ny);
@@ -37,7 +43,7 @@ export async function sucheTrasse(startLL, zielLL, o) {
     throw new Error("Keine Höhendaten am Start (offline nicht gespeichert?).");
 
   // ab hier lokale Koordinaten (Ursprung x0/y0), damit Float32 reicht
-  const s = [S[0] - x0, S[1] - y0], z = [Z[0] - x0, Z[1] - y0];
+  const s = [S[0] - x0, S[1] - y0], c = C.map(p => [p[0] - x0, p[1] - y0]);
   const H = (x, y) => {
     const fx = x / RASTER, fy = y / RASTER, i = Math.floor(fx), j = Math.floor(fy);
     if (i < 0 || j < 0 || i >= nx - 1 || j >= ny - 1) return NaN;
@@ -50,43 +56,45 @@ export async function sucheTrasse(startLL, zielLL, o) {
   const SIN = [], COS = [];
   for (let d = 0; d < RICHTUNGEN; d++) { const a = d * 2 * Math.PI / RICHTUNGEN; SIN.push(Math.sin(a)); COS.push(Math.cos(a)); }
 
-  // Zustände: Gitterzelle × Richtung. Je Zustand die tatsächliche Lage, Höhe, Neigung und Vorgänger.
-  const zx = Math.ceil((nx * RASTER) / ZELLE), zy = Math.ceil((ny * RASTER) / ZELLE), N = zx * zy * RICHTUNGEN;
+  // Zustände: Stufe (nächstes Ziel) × Gitterzelle × Richtung. Je Zustand Lage, Höhe, Neigung und Vorgänger.
+  const W = nx * RASTER, Hh = ny * RASTER;
+  const ZELLE = Math.max(7, Math.sqrt(W * Hh * RICHTUNGEN * m / MAX_ZUSTAENDE));
+  const zx = Math.ceil(W / ZELLE), zy = Math.ceil(Hh / ZELLE), N = m * zx * zy * RICHTUNGEN;
   const kosten = new Float32Array(N).fill(Infinity), vor = new Int32Array(N).fill(-1), zu = new Uint8Array(N);
   const px = new Float32Array(N), py = new Float32Array(N), ph = new Float32Array(N), pg = new Float32Array(N);
-  const idx = (x, y, d) => {
+  const idx = (st, x, y, d) => {
     const i = Math.floor(x / ZELLE), j = Math.floor(y / ZELLE);
-    return i < 0 || j < 0 || i >= zx || j >= zy ? -1 : (j * zx + i) * RICHTUNGEN + d;
+    return i < 0 || j < 0 || i >= zx || j >= zy ? -1 : ((st * zy + j) * zx + i) * RICHTUNGEN + d;
   };
-  const heu = (x, y) => Math.max(0, Math.hypot(z[0] - x, z[1] - y) - R);
+  const stufeVon = k => Math.floor(k / (zx * zy * RICHTUNGEN));
+  const drin = (st, x, y) => Math.hypot(c[st][0] - x, c[st][1] - y) <= R[st];
+  // nach einem Schritt: alle Bereiche, in denen man jetzt steht, gelten als erreicht (außer dem Ziel)
+  const weiter = (st, x, y) => { while (st < m - 1 && drin(st, x, y)) st++; return st; };
+  // Schätzung der Restlänge: bis zum Rand des nächsten Bereichs + Abstände der weiteren Bereiche
+  const rest = new Float64Array(m);
+  for (let i = m - 2; i >= 0; i--) rest[i] = rest[i + 1] + Math.max(0, abstand(c[i], c[i + 1]) - R[i] - R[i + 1]);
+  const heu = (st, x, y) => Math.max(0, Math.hypot(c[st][0] - x, c[st][1] - y) - R[st]) + rest[st];
 
   const heap = new Heap();
-  const h0 = H(s[0], s[1]);
+  const h0 = H(s[0], s[1]), st0 = weiter(0, s[0], s[1]);
   for (let d = 0; d < RICHTUNGEN; d++) {
-    // Fortsetzung eines Abschnitts: Richtungswechsel am Übergang kostet (wie eine Kehre im Zwischenziel-Bereich)
-    let k0 = 0;
-    if (o.startRichtung != null) {
-      const a = d * 2 * Math.PI / RICHTUNGEN, w = Math.abs(Math.atan2(Math.sin(a - o.startRichtung), Math.cos(a - o.startRichtung)));
-      const stufen = Math.round(w / (2 * Math.PI / RICHTUNGEN));
-      k0 = Math.max(0, stufen - 3) * 4;
-    }
-    const k = idx(s[0], s[1], d);
-    kosten[k] = k0; px[k] = s[0]; py[k] = s[1]; ph[k] = h0; pg[k] = o.startNeigung ?? NaN;
-    heap.push(k0 + heu(s[0], s[1]), k);
+    const k = idx(st0, s[0], s[1], d);
+    kosten[k] = 0; px[k] = s[0]; py[k] = s[1]; ph[k] = h0; pg[k] = NaN;
+    heap.push(heu(st0, s[0], s[1]), k);
   }
 
   const { max, min, wechsel, qMax } = o;
-  let ziel = -1, n = 0, naechster = -1, naechsterAbst = Infinity;
+  let ziel = -1, n = 0, besteStufe = st0, besterAbst = Infinity;
   while (heap.size) {
     const k = heap.pop();
     if (zu[k]) continue;
     zu[k] = 1;
-    const x = px[k], y = py[k];
-    const r = Math.hypot(z[0] - x, z[1] - y);
-    if (r <= R) { ziel = k; break; }
-    if (r < naechsterAbst) { naechsterAbst = r; naechster = k; }
+    const x = px[k], y = py[k], st = stufeVon(k);
+    if (st === m - 1 && drin(st, x, y)) { ziel = k; break; }
+    const r = Math.hypot(c[st][0] - x, c[st][1] - y);
+    if (st > besteStufe || (st === besteStufe && r < besterAbst)) { besteStufe = st; besterAbst = r; }
     if (++n % 20000 === 0) { o.fortschritt?.(n); await new Promise(res => setTimeout(res, 0)); }
-    if (n > 4e6) break;
+    if (n > 6e6) break;
 
     const d0 = k % RICHTUNGEN, hc = ph[k], gv = pg[k];
     for (let dd = -3; dd <= 3; dd++) {
@@ -95,32 +103,33 @@ export async function sucheTrasse(startLL, zielLL, o) {
       const h2 = H(x2, y2); if (!isFinite(h2)) continue;
       const g = (h2 - hc) / SCHRITT, ag = Math.abs(g);
       if (ag > max + 0.05) continue;                       // deutlich zu steil: nicht weiter verfolgen
-      let c = SCHRITT + Math.abs(dd) * 1.5 + (Math.abs(dd) === 3 ? 6 : 0);   // Länge + etwas für Kurven, enge Kurven mehr
-      if (ag > max) c += (ag - max) * 100 * 60;
-      if (ag < min) c += (min - ag) * 100 * 2;
-      if (isFinite(gv)) { const dg = Math.abs(g - gv); if (dg > wechsel) c += (dg - wechsel) * 100 * 8; }
+      let kk = SCHRITT + Math.abs(dd) * 1.5 + (Math.abs(dd) === 3 ? 6 : 0);   // Länge + etwas für Kurven, enge Kurven mehr
+      if (ag > max) kk += (ag - max) * 100 * 60;
+      if (ag < min) kk += (min - ag) * 100 * 2;
+      if (isFinite(gv)) { const dg = Math.abs(g - gv); if (dg > wechsel) kk += (dg - wechsel) * 100 * 8; }
       const q = quer((x + x2) / 2, (y + y2) / 2, SIN[d], COS[d]);
-      if (isFinite(q)) { c += q * 2; if (q > qMax) c += (q - qMax) * 100 * 15; }
-      const k2 = idx(x2, y2, d); if (k2 < 0 || zu[k2]) continue;
-      const kn = kosten[k] + c;
+      if (isFinite(q)) { kk += q * 2; if (q > qMax) kk += (q - qMax) * 100 * 15; }
+      const st2 = weiter(st, x2, y2);
+      const k2 = idx(st2, x2, y2, d); if (k2 < 0 || zu[k2]) continue;
+      const kn = kosten[k] + kk;
       if (kn < kosten[k2]) {
         kosten[k2] = kn; vor[k2] = k; px[k2] = x2; py[k2] = y2; ph[k2] = h2; pg[k2] = g;
-        heap.push(kn + heu(x2, y2), k2);
+        heap.push(kn + heu(st2, x2, y2), k2);
       }
     }
   }
   if (ziel < 0) {
-    throw new Error(naechster >= 0 && naechsterAbst < D
-      ? `Kein Weg in den Zielbereich gefunden – am nächsten kam die Suche auf ${Math.round(naechsterAbst)} m. Grenzwerte lockern, Zielbereich vergrößern oder Zwischenziel (Kehre) setzen.`
+    const was = besteStufe === m - 1 ? "Zielbereich" : `Zwischenziel ${besteStufe + 1}`;
+    throw new Error(isFinite(besterAbst)
+      ? `Kein Weg gefunden – die Suche kam bis auf ${Math.round(Math.max(0, besterAbst - R[besteStufe]))} m an ${was} heran. Grenzwerte lockern, Bereich vergrößern oder ein Zwischenziel (Kehre) setzen.`
       : "Kein Weg gefunden – das Gelände ist mit diesen Grenzwerten zu steil.");
   }
   const linie = [];
   for (let k = ziel; k >= 0; k = vor[k]) linie.push([px[k] + x0, py[k] + y0]);
   linie.reverse();
-  // gleiche Startpunkte (alle Richtungen) zusammenfassen
   const ll = vereinfache(linie.filter((p, i) => i === 0 || abstand(p, linie[i - 1]) > 0.01).map(zuWGS), 1.0);
   let L = 0; for (let i = 1; i < linie.length; i++) L += abstand(linie[i - 1], linie[i]);
-  return { ll, L, geprueft: n, endRichtung: (ziel % RICHTUNGEN) * 2 * Math.PI / RICHTUNGEN, endNeigung: isFinite(pg[ziel]) ? pg[ziel] : null };
+  return { ll, L, geprueft: n };
 }
 
 /** kleiner Binär-Heap (Priorität, Wert) */
