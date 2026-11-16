@@ -111,7 +111,13 @@ async function analysiere(v) {
     s, stuecke, L, h0: s[0].h, h1: s[s.length - 1].h,
     gMax: Math.max(...stuecke.map(x => Math.abs(x.g))),
     // Neigungswechsel zwischen benachbarten Stücken (Knick im Längsprofil)
-    knicke: stuecke.slice(1).map((x, i) => ({ st: x.von, dg: Math.abs(x.g - stuecke[i].g) })),
+    // Neigungswechsel über die Visurlänge (30 m): mittlere Neigung 30 m davor gegen 30 m danach
+    knicke: (() => {
+      const n = Math.max(1, Math.round(STANDARD.wechselVisur / 10)), out = [];
+      const mittel = (a, b) => { const t = stuecke.slice(a, b); const L = t.reduce((u, x) => u + x.bis - x.von, 0); return t.reduce((u, x) => u + x.g * (x.bis - x.von), 0) / (L || 1); };
+      for (let j = 1; j < stuecke.length; j++) out.push({ st: stuecke[j].von, dg: Math.abs(mittel(j, j + n) - mittel(Math.max(0, j - n), j)) });
+      return out;
+    })(),
     ueberMax: lang(x => Math.abs(x.g) > max), unterMin: lang(x => Math.abs(x.g) < min),
     querMax: Math.max(...s.map(p => p.quer)), querMittel: s.reduce((t, p) => t + p.quer, 0) / s.length,
     steil: s.filter(p => p.quer >= 0.68).length * ds,
@@ -124,9 +130,10 @@ async function analysiere(v) {
     if (j10 > 0) { const w = Math.abs(dw(az[i], az[j10])); if (w > 0.02) d.rMin = Math.min(d.rMin, (s[j10].st - s[i].st) / w); }
     let j = i, sum = 0;
     while (j + 1 < s.length && s[j + 1].st - s[i].st <= 40) { sum += dw(az[j], az[j + 1]); j++; }
-    if (Math.abs(sum) >= 2 * Math.PI / 3) {
+    if (Math.abs(sum) >= STANDARD.kehreWinkel) {
       const m = s[Math.floor((i + j) / 2)];
-      d.kehren.push({ st: m.st, q: m.quer }); i = j;
+      const gk = Math.abs((s[j].h - s[i].h) / ((s[j].st - s[i].st) || 1));
+      d.kehren.push({ st: m.st, q: m.quer, g: gk }); i = j;
     }
   }
   // Massen und Baukosten nach Planungsstandard (Erdbau + Schotter; Kehren als Mehrmassen)
@@ -137,7 +144,8 @@ async function analysiere(v) {
   const steigung = stuecke.reduce((t, x) => t + Math.abs(x.g) * (x.bis - x.von), 0);
   d.rdl = Math.max(1, Math.ceil(Math.max(L / STANDARD.rdlAbstand, steigung / STANDARD.rdlHoehe)));
   d.wechselMax = Math.max(0, ...d.knicke.map(k => k.dg));
-  d.wechselUeber = d.knicke.filter(k => k.dg > wechsel + 1e-9).length;
+  d.wechselUeber = d.knicke.filter((k, i, a) => k.dg > wechsel + 1e-9 && !(i > 0 && a[i - 1].dg > wechsel + 1e-9)).length;
+  d.kehrenSteil = d.kehren.filter(k => k.g > STANDARD.kehreNeigungMax + 0.005).length;
   if (!d.s.every(p => isFinite(p.h))) d.luecke = true;
   analysen.set(v.id, { key: k, daten: d });
   return d;
@@ -225,7 +233,7 @@ function render() {
     <h3>Grenzwerte</h3>
     <div class="zeile"><span class="klein">Längsneigung min</span><input class="feld" id="g-min" type="number" step="0.5" style="width:70px" value="${min * 100}">
       <span class="klein">max</span><input class="feld" id="g-max" type="number" step="0.5" style="width:70px" value="${max * 100}"><span>%</span></div>
-    <div class="zeile" style="margin-top:6px"><span class="klein">Neigungswechsel max. je Abschnitt (10 m)</span><input class="feld" id="g-wechsel" type="number" step="0.5" style="width:70px" value="${Math.round(wechsel * 1000) / 10}"><span>%</span></div>
+    <div class="zeile" style="margin-top:6px"><span class="klein">Neigungswechsel max. (Visur 30 m)</span><input class="feld" id="g-wechsel" type="number" step="0.5" style="width:70px" value="${Math.round(wechsel * 1000) / 10}"><span>%</span></div>
     <div class="zeile" style="margin-top:6px"><span class="klein">Querausgleich bis (Gelände)</span><input class="feld" id="g-quer" type="number" step="5" style="width:70px" value="${Math.round(querMax() * 100)}"><span>%</span></div>
     <div class="zeile" style="margin-top:6px"><span class="klein">Regelprofil</span><select class="feld" id="g-profil" style="width:auto">
       <option value="">eigenes (Planum ${fmt(app.projekt.weg.planum_m ?? 4.5, 1)} m)</option>
@@ -346,6 +354,7 @@ async function bewerte(pts) {
   for (const p of d.s) if (p.quer > qMax) c += (p.quer - qMax) * 100 * 5 * 20;
   for (const k of d.knicke) if (k.dg > wechsel) c += (k.dg - wechsel) * 100 * 150;
   if (d.rMin < STANDARD.kurveRaMin) c += 5000;
+  for (const k of d.kehren) if (k.g > STANDARD.kehreNeigungMax) c += (k.g - STANDARD.kehreNeigungMax) * 100 * 2000;
   return { c, d };
 }
 
@@ -541,7 +550,7 @@ const aktualisiereAnalyse = entprellt(async () => {
         <div class="kennzahl"><b>${fmt(d.steil)} m</b><span>Gelände ≥ 68 %</span></div>
         <div class="kennzahl"><b>${fmt(Math.round(d.massen / 10) * 10)} m³</b><span>Erdmassen ca.</span></div>
         <div class="kennzahl"><b>${fmt(Math.round(d.kosten / 1000))} T€</b><span>Erdbau + Schotter ca.</span></div>
-        <div class="kennzahl"><b>${d.kehren.length}</b><span>Kehren</span></div>
+        <div class="kennzahl"><b>${d.kehren.length}</b><span>Kehren${d.kehrenSteil ? ` (${d.kehrenSteil} steiler 6 % ⚠)` : ""}</span></div>
         <div class="kennzahl"><b>${isFinite(d.rMin) ? fmt(d.rMin) + " m" : "–"}</b><span>kleinster Radius${d.rMin < STANDARD.kurveRaMin ? " ⚠" : ""}</span></div>
         <div class="kennzahl"><b>${fmt(d.ausserOpt)} m</b><span>außerhalb 5–10 %</span></div>
         <div class="kennzahl"><b>${d.rdl}</b><span>Rohrdurchlässe ca.</span></div>

@@ -116,7 +116,10 @@ export async function sucheTrasse(startLL, ziele, o) {
       if (ag < min) kk += (min - ag) * 100 * SCHRITT * 10;
       const opt = ag < STANDARD.laengsOptMin ? STANDARD.laengsOptMin - ag : ag > STANDARD.laengsOptMax ? ag - STANDARD.laengsOptMax : 0;
       kk += opt * 100 * SCHRITT * 3;
+      // Neigungswechsel über die Visurlänge 30 m: gleitendes Mittel der letzten 3 Schritte (pg) gegen die neue Neigung
+      const gm = isFinite(gv) ? gv + (g - gv) / 3 : g;
       if (isFinite(gv)) { const dg = Math.abs(g - gv); if (dg > wechsel) kk += (dg - wechsel) * 100 * 150; }
+      if (ad === 3 && ag > STANDARD.kehreNeigungMax) kk += (ag - STANDARD.kehreNeigungMax) * 100 * SCHRITT * 100;   // Kehren max. 6 %
       if (qq > qMax) kk += (qq - qMax) * 100 * SCHRITT * 20;
       const st2 = weiter(st, x2, y2), kn = kosten[k] + kk;
       // Im erreichten Zwischenziel-Bereich darf die Linie wenden (Kehre/Umkehrplatz im Erschließungsbereich):
@@ -128,7 +131,7 @@ export async function sucheTrasse(startLL, ziele, o) {
         const extra = stufen > 3 ? euroKehre(isFinite(quer(x2, y2, SIN[dn], COS[dn])) ? quer(x2, y2, SIN[dn], COS[dn]) : 0) * F * (stufen - 3) / 9 : 0;
         const k2 = idx(st2, x2, y2, dn); if (k2 < 0 || zu[k2]) continue;
         if (kn + extra < kosten[k2]) {
-          kosten[k2] = kn + extra; vor[k2] = k; px[k2] = x2; py[k2] = y2; ph[k2] = h2; pg[k2] = stufen > 3 ? NaN : g;
+          kosten[k2] = kn + extra; vor[k2] = k; px[k2] = x2; py[k2] = y2; ph[k2] = h2; pg[k2] = stufen > 3 ? NaN : gm;
           heap.push(kn + extra + heu(st2, x2, y2), k2);
         }
       }

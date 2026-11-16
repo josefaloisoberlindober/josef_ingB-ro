@@ -1,7 +1,8 @@
 // Planungsstandards für Forststraßen – Kennwerte für Vorplanung, Trassenvorschlag und Bewertung.
 // Quelle: DI Clemens Neuber, „Planungsstandards für Forststraßenprojekte“
 // (Forstliche Staatsprüfung 2021, Ausbildungsmodul „Kerngeschäft HOLZ“), sowie Einführung Erschließung,
-// Institut für Forsttechnik, BOKU (2024). Grundsatz: § 60 ForstG – Maßhaltigkeitsgebot: in den Wald nur so
+// Institut für Forsttechnik, BOKU (2024), Stampfer „Linienführung, Querschnittgestaltung und Trassieren“ und
+// Malle/Witzmann/Stampfer „Generalprojekt“ (BOKU 2020). Grundsatz: § 60 ForstG – Maßhaltigkeitsgebot: in den Wald nur so
 // weit eingreifen, als es die Erschließung erfordert → Massen-, Längen- und Kehrenminimierung.
 
 /** Erdmassen je lfm [m³] nach Querneigung des Geländes (Massenentwicklung progressiv) */
@@ -12,6 +13,10 @@ const KEHRE = [[0, 60], [0.2, 100], [0.3, 160], [0.4, 290], [0.5, 520], [0.6, 92
 
 export const STANDARD = {
   laengsOptMin: 0.05, laengsOptMax: 0.10,   // optimal 5–10 %; Abweichungen > 2 % davon sind zu begründen
+  wechselVisur: 30,                           // Gefällsdifferenzen nicht über 3 % bei optimaler Visurlänge 30 m (Stampfer, BOKU)
+  kehreNeigungMax: 0.06,                      // Kehren max. 6 % Längsneigung (Generalprojekt, BOKU)
+  kehreWinkel: 160 / 200 * Math.PI,           // Kehre = Zentriwinkel > 160 gon
+  kehreRadius: 10,                            // Kehrenradius 10 m (15 m)
   querausgleichBis: 0.70,                     // bis ca. 70 % Querausgleich (Baggerbauweise), darüber Längsausgleich
   euroQuer: 2.1,                              // Querausgleich 1,8–2,4 €/m³
   euroLaengsZuschlag: 3.0,                    // ab 70 %: Laden, Abtransport, Kippen, Einbringen min. 3 €/m³
