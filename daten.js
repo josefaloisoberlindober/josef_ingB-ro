@@ -72,7 +72,7 @@ async function render() {
     else render();
   });
   $("#p-neu", panel).onclick = async () => {
-    const n = await eingabe("Name des neuen Projekts", ""); if (!n) return render();
+    const n = await eingabe("Name des neuen Projekts", `Projekt ${new Date().toLocaleDateString("de-AT")}`); if (!n) return render();
     const np = neuesProjekt(n); await store.speichereProjekt(np); await oeffneProjekt(np);
   };
   $("#x-export", panel).onclick = () => exportiere().catch(e => toast("Export fehlgeschlagen: " + e.message, 6000));
