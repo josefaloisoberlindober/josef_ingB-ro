@@ -196,7 +196,7 @@ function render() {
       <span class="klein">Zielbereich</span><input class="feld" id="g-zielr" type="number" step="5" style="width:70px" value="${zielRadius()}"><span>m</span>
     </div>
     <p class="klein">${vw ? (vorschlagStart ? "Jetzt das <b>Ziel</b> anklicken (Mitte des Zielbereichs)." : "<b>Start</b> anklicken (z. B. Anschluss an die bestehende Straße).")
-      : "Sucht automatisch eine Linie vom Start in den Zielbereich, die die Grenzwerte oben möglichst einhält (Längsneigung, Neigungswechsel, Querneigung), mit Kurven bis ca. 20 m Radius. Ergebnis als neue Variante – im Gelände prüfen."}</p>
+      : "Sucht automatisch eine Linie vom Start in den Zielbereich, die die Grenzwerte oben möglichst einhält (Längsneigung, Neigungswechsel, Querneigung), mit Kurven bis ca. 13 m Radius (Kehren). Ergebnis als neue Variante – im Gelände prüfen."}</p>
     ${v ? `
     <h3>Werkzeuge</h3>
     <div class="zeile">

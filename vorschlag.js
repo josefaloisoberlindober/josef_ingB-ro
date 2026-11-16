@@ -1,7 +1,7 @@
 // Automatischer Trassenvorschlag: günstigste Linie vom Start in den Zielbereich über das Höhenmodell.
 //
 // Suche (A*) auf einem Gitter aus 10-m-Schritten in 24 Richtungen (15°). Je Schritt darf die Richtung um
-// höchstens 30° drehen (Kurvenradius ca. 20 m). Bewertet wird wie in der Analyse im Panel: Längsneigung aus
+// höchstens 45° drehen (Kurvenradius ca. 13 m, für Kehren); enge Kurven kosten mehr. Bewertet wird wie in der Analyse im Panel: Längsneigung aus
 // dem Gelände je 10 m, Neigungswechsel gegenüber dem vorigen Schritt, Querneigung des Geländes.
 // Alle Grenzwerte sind „weich“ (hohe Strafkosten), damit auch in schwierigem Gelände ein Vorschlag kommt;
 // was übrig bleibt, zeigt die Analyse der neuen Variante.
@@ -81,14 +81,14 @@ export async function sucheTrasse(startLL, zielLL, o) {
     if (n > 4e6) break;
 
     const d0 = k % RICHTUNGEN, hc = ph[k], gv = pg[k];
-    for (let dd = -2; dd <= 2; dd++) {
+    for (let dd = -3; dd <= 3; dd++) {
       const d = (d0 + dd + RICHTUNGEN) % RICHTUNGEN;
       const x2 = x + SCHRITT * SIN[d], y2 = y + SCHRITT * COS[d];
       const h2 = H(x2, y2); if (!isFinite(h2)) continue;
       const g = (h2 - hc) / SCHRITT, ag = Math.abs(g);
       if (ag > max + 0.05) continue;                       // deutlich zu steil: nicht weiter verfolgen
-      let c = SCHRITT + (dd ? Math.abs(dd) * 1.5 : 0);     // Länge + etwas für Kurven
-      if (ag > max) c += (ag - max) * 100 * 25;
+      let c = SCHRITT + Math.abs(dd) * 1.5 + (Math.abs(dd) === 3 ? 6 : 0);   // Länge + etwas für Kurven, enge Kurven mehr
+      if (ag > max) c += (ag - max) * 100 * 60;
       if (ag < min) c += (min - ag) * 100 * 2;
       if (isFinite(gv)) { const dg = Math.abs(g - gv); if (dg > wechsel) c += (dg - wechsel) * 100 * 8; }
       const q = quer((x + x2) / 2, (y + y2) / 2, SIN[d], COS[d]);
