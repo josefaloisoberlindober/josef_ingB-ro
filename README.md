@@ -4,7 +4,7 @@ Eine App für Mac und iPad, gleiche Daten, kein App Store.
 
 | Modus | wo | was |
 |---|---|---|
-| **Planen** | Mac | Varianten zeichnen, **Nulllinie** mit fester Steigung (schenkelweise, Kehren selbst setzen), Längs- und Querneigung aus dem DGM, Längsprofil, **Trasse anpassen** (Knoten automatisch in die Neigungsgrenzen schieben), **Trassenvorschlag** (Start + Zielbereich anklicken → automatische Linie nach den Grenzwerten) |
+| **Planen** | Mac | Varianten zeichnen, **Nulllinie** mit fester Steigung (schenkelweise, Kehren selbst setzen), Längs- und Querneigung aus dem DGM, Längsprofil, **Trasse anpassen** (Knoten automatisch in die Neigungsgrenzen schieben), **Trassenvorschlag** (Start, Zwischenziele = Erschließungsbereiche und Ziel anklicken → automatische Linie nach den Grenzwerten) |
 | **Aufnehmen** | iPad | GPS-Punkte (gemittelt), Codes und Attribute wie Formular Blatt 2/3, Fotos, Doppelmessung a/b, Hinweise (Punkt fällig, Querneigung fällig, Abstand zur Planung) |
 | **Projektblatt** | beide | Blatt 1 (A–E) → `projekt.json` |
 | **Daten** | beide | Projekte, Export/Import (ZIP), Offline-Karte, Einstellungen |
