@@ -38,7 +38,7 @@ export function eingabe(titel, wert = "") {
     (s, zu) => {
       const i = $("#eg", s); setTimeout(() => i.focus(), 50);
       $("[data-n]", s).onclick = () => zu(null); $("[data-j]", s).onclick = () => zu(i.value.trim());
-      i.onkeydown = e => e.key === "Enter" && zu(i.value.trim());
+      i.onkeydown = e => { if (e.key === "Enter") zu(i.value.trim()); };   // kein &&: false als Rückgabe blockiert jede Taste
     });
 }
 
