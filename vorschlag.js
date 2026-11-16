@@ -2,14 +2,18 @@
 //
 // Suche (A*) auf einem Gitter aus 10-m-Schritten in 24 Richtungen (15°). Je Schritt darf die Richtung um
 // höchstens 45° drehen (Kurvenradius ca. 13 m, für Kehren); enge Kurven kosten mehr. Bewertet wird wie in der
-// Analyse im Panel: Längsneigung aus dem Gelände je 10 m, Neigungswechsel gegenüber dem vorigen Schritt,
-// Querneigung des Geländes. Alle Grenzwerte sind „weich“ (hohe Strafkosten), damit auch in schwierigem Gelände
-// ein Vorschlag kommt; was übrig bleibt, zeigt die Analyse der neuen Variante.
+// Analyse im Panel. Gesucht wird die Linie mit den geringsten Baukosten nach Planungsstandard (Neuber):
+// Erdmassen je lfm steigen progressiv mit der Querneigung, ab 70 % kommt der Längsausgleich dazu, jede Kehre
+// kostet Mehrmassen je nach Hangneigung. Das setzt das Maßhaltigkeitsgebot (§ 60 ForstG) um: kurze,
+// massenarme Linien mit wenigen Kehren in flachem Gelände werden bevorzugt.
+// Längsneigung über dem Grenzwert ist (bis auf Messrauschen von 2 %) gesperrt; außerhalb 5–10 %, Knicke und
+// Gelände über dem Querausgleich kosten Zuschläge.
 // Zwischenziele (Bereiche, die erschlossen werden sollen) werden in einer gemeinsamen Suche berücksichtigt:
 // der Zustand merkt sich, welcher Bereich als nächster erreicht werden muss. So wird die ganze Linie
 // gemeinsam optimiert und nicht Abschnitt für Abschnitt (das gäbe Schleifen an den Bereichen).
 import { hoehenGK } from "./dem.js";
 import { zuGK, zuWGS, abstand, vereinfache } from "./geo.js";
+import { STANDARD, euroJeLfm, euroKehre, EURO_MIN_LFM } from "./standards.js";
 
 const RICHTUNGEN = 24, SCHRITT = 10, RASTER = 5;
 const MAX_ZELLEN = 160000;      // Höhenraster 5 m → ca. 2 × 2 km Suchgebiet
@@ -73,7 +77,8 @@ export async function sucheTrasse(startLL, ziele, o) {
   // Schätzung der Restlänge: bis zum Rand des nächsten Bereichs + Abstände der weiteren Bereiche
   const rest = new Float64Array(m);
   for (let i = m - 2; i >= 0; i--) rest[i] = rest[i + 1] + Math.max(0, abstand(c[i], c[i + 1]) - R[i] - R[i + 1]);
-  const heu = (st, x, y) => Math.max(0, Math.hypot(c[st][0] - x, c[st][1] - y) - R[st]) + rest[st];
+  const F = o.massenFaktor ?? 1, EMIN = EURO_MIN_LFM * F;
+  const heu = (st, x, y) => (Math.max(0, Math.hypot(c[st][0] - x, c[st][1] - y) - R[st]) + rest[st]) * EMIN;
 
   const heap = new Heap();
   const h0 = H(s[0], s[1]), st0 = weiter(0, s[0], s[1]);
@@ -102,13 +107,17 @@ export async function sucheTrasse(startLL, ziele, o) {
       const x2 = x + SCHRITT * SIN[d], y2 = y + SCHRITT * COS[d];
       const h2 = H(x2, y2); if (!isFinite(h2)) continue;
       const g = (h2 - hc) / SCHRITT, ag = Math.abs(g);
-      if (ag > max + 0.05) continue;                       // deutlich zu steil: nicht weiter verfolgen
-      let kk = SCHRITT + Math.abs(dd) * 1.5 + (Math.abs(dd) === 3 ? 6 : 0);   // Länge + etwas für Kurven, enge Kurven mehr
-      if (ag > max) kk += (ag - max) * 100 * 60;
-      if (ag < min) kk += (min - ag) * 100 * 2;
-      if (isFinite(gv)) { const dg = Math.abs(g - gv); if (dg > wechsel) kk += (dg - wechsel) * 100 * 8; }
-      const q = quer((x + x2) / 2, (y + y2) / 2, SIN[d], COS[d]);
-      if (isFinite(q)) { kk += q * 2; if (q > qMax) kk += (q - qMax) * 100 * 15; }
+      if (ag > max + 0.02) continue;                       // über dem Grenzwert (+2 % Messrauschen): gesperrt
+      const q = quer((x + x2) / 2, (y + y2) / 2, SIN[d], COS[d]), qq = isFinite(q) ? q : 0;
+      let kk = euroJeLfm(qq) * F * SCHRITT;                // Baukosten dieses Abschnitts
+      const ad = Math.abs(dd);                             // Kurven: 45°/10 m ist Kehrenradius, 30° halb so teuer
+      if (ad === 3) kk += euroKehre(qq) * F / 4; else if (ad === 2) kk += euroKehre(qq) * F / 12;
+      if (ag > max) kk += (ag - max) * 100 * SCHRITT * 200;
+      if (ag < min) kk += (min - ag) * 100 * SCHRITT * 10;
+      const opt = ag < STANDARD.laengsOptMin ? STANDARD.laengsOptMin - ag : ag > STANDARD.laengsOptMax ? ag - STANDARD.laengsOptMax : 0;
+      kk += opt * 100 * SCHRITT * 3;
+      if (isFinite(gv)) { const dg = Math.abs(g - gv); if (dg > wechsel) kk += (dg - wechsel) * 100 * 150; }
+      if (qq > qMax) kk += (qq - qMax) * 100 * SCHRITT * 20;
       const st2 = weiter(st, x2, y2), kn = kosten[k] + kk;
       // Im erreichten Zwischenziel-Bereich darf die Linie wenden (Kehre/Umkehrplatz im Erschließungsbereich):
       // alle Richtungen, je stärker die Wende, desto teurer
@@ -116,7 +125,7 @@ export async function sucheTrasse(startLL, ziele, o) {
       for (let w = 0; w < wende; w++) {
         const dn = wende === 1 ? d : w;
         const stufen = Math.min((dn - d + RICHTUNGEN) % RICHTUNGEN, (d - dn + RICHTUNGEN) % RICHTUNGEN);
-        const extra = stufen > 3 ? (stufen - 3) * 4 : 0;
+        const extra = stufen > 3 ? euroKehre(isFinite(quer(x2, y2, SIN[dn], COS[dn])) ? quer(x2, y2, SIN[dn], COS[dn]) : 0) * F * (stufen - 3) / 9 : 0;
         const k2 = idx(st2, x2, y2, dn); if (k2 < 0 || zu[k2]) continue;
         if (kn + extra < kosten[k2]) {
           kosten[k2] = kn + extra; vor[k2] = k; px[k2] = x2; py[k2] = y2; ph[k2] = h2; pg[k2] = stufen > 3 ? NaN : g;

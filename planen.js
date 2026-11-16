@@ -6,6 +6,7 @@ import { zuGK, zuWGS, abstand, teile, vereinfache, aufLinie, fmt, hm } from "./g
 import { $, $$, esc, toast, frage, eingabe, sheet, entprellt } from "./ui.js";
 import { neueId } from "./store.js";
 import { sucheTrasse } from "./vorschlag.js";
+import { STANDARD, massenJeLfm, kehrenMassen, euroJeLfm, euroKehre } from "./standards.js";
 
 const FARBEN = ["#c0392b", "#7b1fa2", "#d35400", "#00897b", "#283593", "#6d4c41"];
 let panel = null, aktivModus = false, werkzeug = null, nullStart = null, marker = [], hoverMarker = null;
@@ -15,7 +16,10 @@ const P = () => app.projekt.plan;
 const aktiv = () => P().varianten.find(v => v.id === P().aktiv) || null;
 const grenzen = () => ({ max: app.projekt.weg.laengsneigung_max ?? 0.10, min: app.projekt.weg.laengsneigung_min ?? 0.05,
   wechsel: app.projekt.weg.neigungswechsel_max ?? 0.03 });
-const querMax = () => app.projekt.weg.querneigung_max ?? 1.0;
+const querMax = () => app.projekt.weg.querneigung_max ?? STANDARD.querausgleichBis;
+/** Regelprofil (F1/F2) und Massenfaktor gegenüber F1 (Massentabelle gilt für ein Stichweg-Profil) */
+const profil = () => STANDARD.profile[app.projekt.weg.regelprofil] || null;
+const massenFaktor = () => Math.max(0.6, (app.projekt.weg.planum_m ?? 4.5) / STANDARD.profile.F1.planum);
 const maxVerschiebung = () => app.projekt.weg.verschiebung_max_m ?? 15;
 let anpassenLaeuft = false, suchLaeuft = false;
 let vorschlagPunkte = [], vorschlagMarker = [];   // [{ll, r}] – erster = Start, letzter = Ziel, dazwischen Zwischenziele
@@ -85,7 +89,7 @@ function setzeKnoten() {
 }
 
 // ---------- Analyse aus dem Höhenmodell ----------
-const key = v => JSON.stringify(v.punkte) + JSON.stringify(grenzen());
+const key = v => JSON.stringify(v.punkte) + JSON.stringify(grenzen()) + querMax() + massenFaktor();
 
 async function analysiere(v) {
   if (v.punkte.length < 2) return null;
@@ -112,6 +116,26 @@ async function analysiere(v) {
     querMax: Math.max(...s.map(p => p.quer)), querMittel: s.reduce((t, p) => t + p.quer, 0) / s.length,
     steil: s.filter(p => p.quer >= 0.68).length * ds,
   };
+  // Kehren: Richtungsänderung ≥ 120° innerhalb von 40 m; kleinster Radius aus der Richtungsänderung je 10 m
+  const az = s.map(p => Math.atan2(p.ux, p.uy)), dw = (a, b) => Math.atan2(Math.sin(b - a), Math.cos(b - a));
+  d.kehren = []; d.rMin = Infinity;
+  for (let i = 0; i < s.length; i++) {
+    const j10 = s.findIndex((q, k) => k > i && q.st - s[i].st >= 10);
+    if (j10 > 0) { const w = Math.abs(dw(az[i], az[j10])); if (w > 0.02) d.rMin = Math.min(d.rMin, (s[j10].st - s[i].st) / w); }
+    let j = i, sum = 0;
+    while (j + 1 < s.length && s[j + 1].st - s[i].st <= 40) { sum += dw(az[j], az[j + 1]); j++; }
+    if (Math.abs(sum) >= 2 * Math.PI / 3) {
+      const m = s[Math.floor((i + j) / 2)];
+      d.kehren.push({ st: m.st, q: m.quer }); i = j;
+    }
+  }
+  // Massen und Baukosten nach Planungsstandard (Erdbau + Schotter; Kehren als Mehrmassen)
+  const f = massenFaktor();
+  d.massen = s.slice(1).reduce((t, p, i) => t + massenJeLfm(p.quer) * f * (p.st - s[i].st), 0) + d.kehren.reduce((t, k) => t + kehrenMassen(k.q) * f, 0);
+  d.kosten = s.slice(1).reduce((t, p, i) => t + euroJeLfm(p.quer) * (p.st - s[i].st), 0) * f + d.kehren.reduce((t, k) => t + euroKehre(k.q) * f, 0);
+  d.ausserOpt = lang(x => Math.abs(x.g) < STANDARD.laengsOptMin - 1e-9 || Math.abs(x.g) > STANDARD.laengsOptMax + 1e-9);
+  const steigung = stuecke.reduce((t, x) => t + Math.abs(x.g) * (x.bis - x.von), 0);
+  d.rdl = Math.max(1, Math.ceil(Math.max(L / STANDARD.rdlAbstand, steigung / STANDARD.rdlHoehe)));
   d.wechselMax = Math.max(0, ...d.knicke.map(k => k.dg));
   d.wechselUeber = d.knicke.filter(k => k.dg > wechsel + 1e-9).length;
   if (!d.s.every(p => isFinite(p.h))) d.luecke = true;
@@ -202,7 +226,11 @@ function render() {
     <div class="zeile"><span class="klein">Längsneigung min</span><input class="feld" id="g-min" type="number" step="0.5" style="width:70px" value="${min * 100}">
       <span class="klein">max</span><input class="feld" id="g-max" type="number" step="0.5" style="width:70px" value="${max * 100}"><span>%</span></div>
     <div class="zeile" style="margin-top:6px"><span class="klein">Neigungswechsel max. je Abschnitt (10 m)</span><input class="feld" id="g-wechsel" type="number" step="0.5" style="width:70px" value="${Math.round(wechsel * 1000) / 10}"><span>%</span></div>
-    <div class="zeile" style="margin-top:6px"><span class="klein">Querneigung Gelände max</span><input class="feld" id="g-quer" type="number" step="5" style="width:70px" value="${Math.round(querMax() * 100)}"><span>%</span></div>
+    <div class="zeile" style="margin-top:6px"><span class="klein">Querausgleich bis (Gelände)</span><input class="feld" id="g-quer" type="number" step="5" style="width:70px" value="${Math.round(querMax() * 100)}"><span>%</span></div>
+    <div class="zeile" style="margin-top:6px"><span class="klein">Regelprofil</span><select class="feld" id="g-profil" style="width:auto">
+      <option value="">eigenes (Planum ${fmt(app.projekt.weg.planum_m ?? 4.5, 1)} m)</option>
+      ${Object.entries(STANDARD.profile).map(([k, x]) => `<option value="${k}" ${app.projekt.weg.regelprofil === k ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></div>
+    <p class="klein">Bewertung nach Planungsstandard (Neuber): Massen je lfm nach Querneigung, ab 70 % Längsausgleich, Kehren als Mehrmassen; optimale Längsneigung 5–10 %, Radius ≥ 9,75 m. Maßhaltigkeitsgebot § 60 ForstG: kürzeste und massenärmste Linie bevorzugt.</p>
     <h3>Trassenvorschlag</h3>
     ${vw ? `
     <p class="klein">${vorschlagPunkte.length ? "Weitere Punkte anklicken: zuerst die <b>Zwischenziele</b> (Bereiche, die erschlossen werden sollen) in der gewünschten Reihenfolge, zuletzt das <b>Ziel</b>." : "<b>Start</b> anklicken (z. B. Anschluss an die bestehende Straße)."}
@@ -260,7 +288,13 @@ function render() {
   $("#g-min", panel).onchange = e => { app.projekt.weg.laengsneigung_min = +e.target.value / 100; geaendert("plan"); };
   $("#g-max", panel).onchange = e => { app.projekt.weg.laengsneigung_max = +e.target.value / 100; geaendert("plan"); };
   $("#g-wechsel", panel).onchange = e => { app.projekt.weg.neigungswechsel_max = (parseFloat(e.target.value) || 3) / 100; geaendert("plan"); };
-  $("#g-quer", panel).onchange = e => { app.projekt.weg.querneigung_max = (parseFloat(e.target.value) || 100) / 100; geaendert("einstellung"); };
+  $("#g-quer", panel).onchange = e => { app.projekt.weg.querneigung_max = (parseFloat(e.target.value) || 70) / 100; geaendert("plan"); };
+  $("#g-profil", panel).onchange = e => {
+    const w = app.projekt.weg, x = STANDARD.profile[e.target.value];
+    w.regelprofil = e.target.value || null;
+    if (x) { w.planum_m = x.planum; w.fahrbahn_m = x.fahrbahn; }
+    geaendert("plan"); render();
+  };
   const zr = $("#g-zielr", panel); if (zr) zr.onchange = e => { app.projekt.weg.zielradius_m = Math.max(5, parseFloat(e.target.value) || 20); geaendert("einstellung"); };
   $("#w-vorschlag", panel).onclick = () => { werkzeug = vw ? null : "vorschlag"; vorschlagZuruecksetzen(); zeichnePlanung(); setzeKnoten(); render(); };
   const wb = $("#w-berechnen", panel); if (wb) wb.onclick = () => trassenVorschlag(vorschlagPunkte.map(p => ({ ...p })));
@@ -297,16 +331,21 @@ const TMP = "__bewertung";
 
 /** Strafpunkte einer Linie nach den Grenzwerten (gleiche Analyse wie im Panel: DGM 10 m, Stücke à 10 m) */
 async function bewerte(pts) {
+  // Bewertung in € nach Planungsstandard: Baukosten (Massen nach Querneigung, Kehren, Schotter)
+  // + Zuschläge für Abweichungen von den Grenzwerten (Maßhaltigkeitsgebot § 60 ForstG)
   const { max, min, wechsel } = grenzen(), qMax = querMax();
   const d = await analysiere({ id: TMP, punkte: pts });
-  let c = d.luecke ? 1e6 : 0;
+  let c = d.luecke ? 1e7 : d.kosten;
   for (const x of d.stuecke) {
     const g = Math.abs(x.g), L = x.bis - x.von;
-    if (g > max) c += (g - max) * 100 * L * 3;
-    if (g < min) c += (min - g) * 100 * L * 0.1;
+    if (g > max) c += (g - max) * 100 * L * 200;                       // praktisch verboten
+    if (g < min) c += (min - g) * 100 * L * 10;
+    const opt = g < STANDARD.laengsOptMin ? STANDARD.laengsOptMin - g : g > STANDARD.laengsOptMax ? g - STANDARD.laengsOptMax : 0;
+    c += opt * 100 * L * 3;                                              // außerhalb 5–10 %: begründungspflichtig
   }
-  for (const p of d.s) if (p.quer > qMax) c += (p.quer - qMax) * 100 * 2.5;
-  for (const k of d.knicke) if (k.dg > wechsel) c += (k.dg - wechsel) * 100 * 15;
+  for (const p of d.s) if (p.quer > qMax) c += (p.quer - qMax) * 100 * 5 * 20;
+  for (const k of d.knicke) if (k.dg > wechsel) c += (k.dg - wechsel) * 100 * 150;
+  if (d.rMin < STANDARD.kurveRaMin) c += 5000;
   return { c, d };
 }
 
@@ -349,12 +388,12 @@ async function verbessere(pts0, ref, V, zeit = 60000) {
 /** Kurzbeschreibung einer Analyse für Notiz und Meldungen */
 function kennwerte(d) {
   const { max, min, wechsel } = grenzen(), fq = querMax() * 100;
-  return `${fmt(d.L)} m, max. ${fmt(d.gMax * 100, 1)} %, ${fmt(d.ueberMax)} m über ${fmt(max * 100, 1)} %, ${fmt(d.unterMin)} m unter ${fmt(min * 100, 1)} %, ` +
+  return `${fmt(d.L)} m, ca. ${fmt(Math.round(d.massen / 10) * 10)} m³ Erdmassen, ca. ${fmt(Math.round(d.kosten / 100) * 100)} € (Erdbau + Schotter), ${d.kehren.length} Kehre${d.kehren.length === 1 ? "" : "n"}, max. ${fmt(d.gMax * 100, 1)} %, ${fmt(d.ausserOpt)} m außerhalb 5–10 %, ${fmt(d.ueberMax)} m über ${fmt(max * 100, 1)} %, ${fmt(d.unterMin)} m unter ${fmt(min * 100, 1)} %, ` +
     `${d.wechselUeber} Knicke über ${fmt(wechsel * 100, 1)} % (max. ${fmt(d.wechselMax * 100, 1)} %), ${fmt(d.s.filter(p => p.quer > querMax()).length * 5)} m Gelände über ${fmt(fq)} %`;
 }
 function grenzText() {
   const { max, min, wechsel } = grenzen();
-  return `Grenzwerte ${fmt(min * 100, 1)}–${fmt(max * 100, 1)} %, Neigungswechsel max. ${fmt(wechsel * 100, 1)} %, Querneigung max. ${fmt(querMax() * 100)} %`;
+  return `Grenzwerte ${fmt(min * 100, 1)}–${fmt(max * 100, 1)} %, Neigungswechsel max. ${fmt(wechsel * 100, 1)} %, Querausgleich bis ${fmt(querMax() * 100)} %${profil() ? ", Regelprofil " + app.projekt.weg.regelprofil : ""}; Kosten nach Planungsstandard (Neuber)`;
 }
 function restText(d) {
   const { max, wechsel } = grenzen(), rest = [], ueberQ = d.s.filter(p => p.quer > querMax()).length * 5;
@@ -396,7 +435,7 @@ async function trassenVorschlag(punkte) {
     toast("Trassenvorschlag: Höhenmodell wird geladen …", 120000);
     // eine gemeinsame Suche über alle Bereiche (Start → Z1 → Z2 → … → Ziel)
     const r = await sucheTrasse(punkte[0].ll, punkte.slice(1), {
-      max, min, wechsel, qMax: querMax(),
+      max, min, wechsel, qMax: querMax(), massenFaktor: massenFaktor(),
       fortschritt: n => toast(`Trassenvorschlag: ${fmt(n)} Varianten geprüft …`, 120000),
     });
     const linie = r.ll;
@@ -500,6 +539,12 @@ const aktualisiereAnalyse = entprellt(async () => {
         <div class="kennzahl"><b>${fmt(d.querMittel * 100)} %</b><span>Querneigung mittel</span></div>
         <div class="kennzahl"><b>${fmt(d.querMax * 100)} %</b><span>Querneigung max.</span></div>
         <div class="kennzahl"><b>${fmt(d.steil)} m</b><span>Gelände ≥ 68 %</span></div>
+        <div class="kennzahl"><b>${fmt(Math.round(d.massen / 10) * 10)} m³</b><span>Erdmassen ca.</span></div>
+        <div class="kennzahl"><b>${fmt(Math.round(d.kosten / 1000))} T€</b><span>Erdbau + Schotter ca.</span></div>
+        <div class="kennzahl"><b>${d.kehren.length}</b><span>Kehren</span></div>
+        <div class="kennzahl"><b>${isFinite(d.rMin) ? fmt(d.rMin) + " m" : "–"}</b><span>kleinster Radius${d.rMin < STANDARD.kurveRaMin ? " ⚠" : ""}</span></div>
+        <div class="kennzahl"><b>${fmt(d.ausserOpt)} m</b><span>außerhalb 5–10 %</span></div>
+        <div class="kennzahl"><b>${d.rdl}</b><span>Rohrdurchlässe ca.</span></div>
       </div>
       ${d.luecke ? `<p class="klein" style="color:var(--rot)">Für einen Teil der Linie fehlen Höhendaten (offline nicht gespeichert?).</p>` : ""}
       ${profilSVG(d)}
