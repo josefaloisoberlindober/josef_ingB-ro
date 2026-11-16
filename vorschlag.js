@@ -109,12 +109,19 @@ export async function sucheTrasse(startLL, ziele, o) {
       if (isFinite(gv)) { const dg = Math.abs(g - gv); if (dg > wechsel) kk += (dg - wechsel) * 100 * 8; }
       const q = quer((x + x2) / 2, (y + y2) / 2, SIN[d], COS[d]);
       if (isFinite(q)) { kk += q * 2; if (q > qMax) kk += (q - qMax) * 100 * 15; }
-      const st2 = weiter(st, x2, y2);
-      const k2 = idx(st2, x2, y2, d); if (k2 < 0 || zu[k2]) continue;
-      const kn = kosten[k] + kk;
-      if (kn < kosten[k2]) {
-        kosten[k2] = kn; vor[k2] = k; px[k2] = x2; py[k2] = y2; ph[k2] = h2; pg[k2] = g;
-        heap.push(kn + heu(st2, x2, y2), k2);
+      const st2 = weiter(st, x2, y2), kn = kosten[k] + kk;
+      // Im erreichten Zwischenziel-Bereich darf die Linie wenden (Kehre/Umkehrplatz im Erschließungsbereich):
+      // alle Richtungen, je stärker die Wende, desto teurer
+      const wende = st2 > st ? RICHTUNGEN : 1;
+      for (let w = 0; w < wende; w++) {
+        const dn = wende === 1 ? d : w;
+        const stufen = Math.min((dn - d + RICHTUNGEN) % RICHTUNGEN, (d - dn + RICHTUNGEN) % RICHTUNGEN);
+        const extra = stufen > 3 ? (stufen - 3) * 4 : 0;
+        const k2 = idx(st2, x2, y2, dn); if (k2 < 0 || zu[k2]) continue;
+        if (kn + extra < kosten[k2]) {
+          kosten[k2] = kn + extra; vor[k2] = k; px[k2] = x2; py[k2] = y2; ph[k2] = h2; pg[k2] = stufen > 3 ? NaN : g;
+          heap.push(kn + extra + heu(st2, x2, y2), k2);
+        }
       }
     }
   }
