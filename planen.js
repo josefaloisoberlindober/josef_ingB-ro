@@ -12,7 +12,8 @@ const analysen = new Map();   // Varianten-ID -> {key, daten}
 
 const P = () => app.projekt.plan;
 const aktiv = () => P().varianten.find(v => v.id === P().aktiv) || null;
-const grenzen = () => ({ max: app.projekt.weg.laengsneigung_max ?? 0.10, min: app.projekt.weg.laengsneigung_min ?? 0.05 });
+const grenzen = () => ({ max: app.projekt.weg.laengsneigung_max ?? 0.10, min: app.projekt.weg.laengsneigung_min ?? 0.05,
+  wechsel: app.projekt.weg.neigungswechsel_max ?? 0.03 });
 const querMax = () => app.projekt.weg.querneigung_max ?? 1.0;
 const maxVerschiebung = () => app.projekt.weg.verschiebung_max_m ?? 15;
 let anpassenLaeuft = false;
@@ -85,15 +86,19 @@ async function analysiere(v) {
     const j = Math.min(i + 2, s.length - 1), a = s[i], b = s[j];
     stuecke.push({ von: a.st, bis: b.st, g: (b.h - a.h) / (b.st - a.st || 1), ll: [zuWGS([a.x, a.y]), ...(j > i + 1 ? [zuWGS([s[i + 1].x, s[i + 1].y])] : []), zuWGS([b.x, b.y])] });
   }
-  const { max, min } = grenzen(), L = s[s.length - 1].st;
+  const { max, min, wechsel } = grenzen(), L = s[s.length - 1].st;
   const lang = f => stuecke.filter(f).reduce((t, x) => t + x.bis - x.von, 0);
   const d = {
     s, stuecke, L, h0: s[0].h, h1: s[s.length - 1].h,
     gMax: Math.max(...stuecke.map(x => Math.abs(x.g))),
+    // Neigungswechsel zwischen benachbarten Stücken (Knick im Längsprofil)
+    knicke: stuecke.slice(1).map((x, i) => ({ st: x.von, dg: Math.abs(x.g - stuecke[i].g) })),
     ueberMax: lang(x => Math.abs(x.g) > max), unterMin: lang(x => Math.abs(x.g) < min),
     querMax: Math.max(...s.map(p => p.quer)), querMittel: s.reduce((t, p) => t + p.quer, 0) / s.length,
     steil: s.filter(p => p.quer >= 0.68).length * ds,
   };
+  d.wechselMax = Math.max(0, ...d.knicke.map(k => k.dg));
+  d.wechselUeber = d.knicke.filter(k => k.dg > wechsel + 1e-9).length;
   if (!d.s.every(p => isFinite(p.h))) d.luecke = true;
   analysen.set(v.id, { key: k, daten: d });
   return d;
@@ -197,6 +202,7 @@ function render() {
     <h3>Grenzwerte Längsneigung</h3>
     <div class="zeile"><span class="klein">min</span><input class="feld" id="g-min" type="number" step="0.5" style="width:80px" value="${min * 100}">
       <span class="klein">max</span><input class="feld" id="g-max" type="number" step="0.5" style="width:80px" value="${max * 100}"><span>%</span></div>
+    <div class="zeile" style="margin-top:6px"><span class="klein">Neigungswechsel max. je Abschnitt (10 m)</span><input class="feld" id="g-wechsel" type="number" step="0.5" style="width:80px" value="${Math.round(grenzen().wechsel * 1000) / 10}"><span>%</span></div>
     <h3>Trasse anpassen</h3>
     <div class="zeile"><span class="klein">Querneigung Gelände max</span><input class="feld" id="g-quer" type="number" step="5" style="width:80px" value="${Math.round(querMax() * 100)}"><span>%</span>
       <span class="klein">Verschiebung max</span><input class="feld" id="g-versch" type="number" step="1" style="width:70px" value="${maxVerschiebung()}"><span>m</span></div>
@@ -229,6 +235,7 @@ function render() {
   $("#w-umkehren", panel).onclick = () => { v.punkte.reverse(); geaendert("plan"); };
   const ng = $("#n-g", panel); if (ng) ng.onchange = () => { app.projekt.plan.nullG = +ng.value; geaendert("einstellung"); };  $("#g-min", panel).onchange = e => { app.projekt.weg.laengsneigung_min = +e.target.value / 100; geaendert("plan"); };
   $("#g-max", panel).onchange = e => { app.projekt.weg.laengsneigung_max = +e.target.value / 100; geaendert("plan"); };
+  $("#g-wechsel", panel).onchange = e => { app.projekt.weg.neigungswechsel_max = (parseFloat(e.target.value) || 3) / 100; geaendert("plan"); };
   $("#g-quer", panel).onchange = e => { app.projekt.weg.querneigung_max = (parseFloat(e.target.value) || 100) / 100; geaendert("einstellung"); };
   $("#g-versch", panel).onchange = e => { app.projekt.weg.verschiebung_max_m = Math.max(1, parseFloat(e.target.value) || 15); geaendert("einstellung"); };
   $("#w-anpassen", panel).onclick = () => trasseAnpassen(v);
@@ -254,7 +261,7 @@ async function trasseAnpassen(v) {
   anpassenLaeuft = true; render(); toast("Trasse wird angepasst …", 60000);
   const TMP = "__anpassen", t0 = performance.now(), ZEIT = 60000;
   try {
-    const { max, min } = grenzen(), qMax = querMax(), V = maxVerschiebung(), orig = v.punkte.map(p => p.slice());
+    const { max, min, wechsel } = grenzen(), qMax = querMax(), V = maxVerschiebung(), orig = v.punkte.map(p => p.slice());
     const bewerte = async pts => {
       const d = await analysiere({ id: TMP, punkte: pts });
       let c = d.luecke ? 1e6 : 0;
@@ -264,6 +271,7 @@ async function trasseAnpassen(v) {
         if (g < min) c += (min - g) * 100 * L * 0.1;
       }
       for (const p of d.s) if (p.quer > qMax) c += (p.quer - qMax) * 100 * 2.5;
+      for (const k of d.knicke) if (k.dg > wechsel) c += (k.dg - wechsel) * 100 * 15;
       return { c, d };
     };
     // 1. verdichten: Knoten höchstens 15 m auseinander, damit die Linie dem Gelände folgen kann
@@ -302,13 +310,14 @@ async function trasseAnpassen(v) {
     const ueberQ = d => d.s.filter(p => p.quer > qMax).length * 5;
     const fq = qMax * 100;
     const notiz = `Automatisch angepasst aus „${v.name}“ (DGM 10 m, Grenzwerte ${fmt(min * 100, 1)}–${fmt(max * 100, 1)} %, ` +
-      `Querneigung max. ${fmt(fq)} %, Verschiebung max. ${fmt(V)} m).\n` +
-      `Vorher: max. ${fmt(vorher.gMax * 100, 1)} %, ${fmt(vorher.ueberMax)} m über ${fmt(max * 100, 1)} %, ${fmt(vorher.unterMin)} m unter ${fmt(min * 100, 1)} %, ${fmt(ueberQ(vorher))} m Gelände über ${fmt(fq)} %.\n` +
-      `Nachher: max. ${fmt(nachher.gMax * 100, 1)} %, ${fmt(nachher.ueberMax)} m über ${fmt(max * 100, 1)} %, ${fmt(nachher.unterMin)} m unter ${fmt(min * 100, 1)} %, ${fmt(ueberQ(nachher))} m Gelände über ${fmt(fq)} %.`;
+      `Neigungswechsel max. ${fmt(wechsel * 100, 1)} %, Querneigung max. ${fmt(fq)} %, Verschiebung max. ${fmt(V)} m).\n` +
+      `Vorher: max. ${fmt(vorher.gMax * 100, 1)} %, ${fmt(vorher.ueberMax)} m über ${fmt(max * 100, 1)} %, ${fmt(vorher.unterMin)} m unter ${fmt(min * 100, 1)} %, ${vorher.wechselUeber} Knicke über ${fmt(wechsel * 100, 1)} % (max. ${fmt(vorher.wechselMax * 100, 1)} %), ${fmt(ueberQ(vorher))} m Gelände über ${fmt(fq)} %.\n` +
+      `Nachher: max. ${fmt(nachher.gMax * 100, 1)} %, ${fmt(nachher.ueberMax)} m über ${fmt(max * 100, 1)} %, ${fmt(nachher.unterMin)} m unter ${fmt(min * 100, 1)} %, ${nachher.wechselUeber} Knicke über ${fmt(wechsel * 100, 1)} % (max. ${fmt(nachher.wechselMax * 100, 1)} %), ${fmt(ueberQ(nachher))} m Gelände über ${fmt(fq)} %.`;
     anpassenLaeuft = false;
     neueVariante(`${v.name} (angepasst)`, pts);
     aktiv().notiz = notiz; geaendert("notiz"); render();
     const rest = [];
+    if (nachher.wechselUeber > 0) rest.push(`${nachher.wechselUeber} Knicke über ${fmt(wechsel * 100, 1)} % Neigungswechsel`);
     if (nachher.ueberMax > 0) rest.push(`${fmt(nachher.ueberMax)} m bleiben über ${fmt(max * 100, 1)} %`);
     if (ueberQ(nachher) > 0) rest.push(`${fmt(ueberQ(nachher))} m liegen in Gelände über ${fmt(fq)} %`);
     toast(`Neue Variante angelegt: max. ${fmt(nachher.gMax * 100, 1)} % Längsneigung` +
@@ -382,6 +391,8 @@ const aktualisiereAnalyse = entprellt(async () => {
         <div class="kennzahl"><b>${fmt(d.gMax * 100, 1)} %</b><span>max. Längsneigung</span></div>
         <div class="kennzahl"><b>${fmt(d.ueberMax)} m</b><span>über ${fmt(max * 100, 1)} %</span></div>
         <div class="kennzahl"><b>${fmt(d.unterMin)} m</b><span>unter ${fmt(min * 100, 1)} %</span></div>
+        <div class="kennzahl"><b>${fmt(d.wechselMax * 100, 1)} %</b><span>max. Neigungswechsel</span></div>
+        <div class="kennzahl"><b>${d.wechselUeber}</b><span>Knicke &gt; ${fmt(grenzen().wechsel * 100, 1)} %</span></div>
         <div class="kennzahl"><b>${fmt(d.querMittel * 100)} %</b><span>Querneigung mittel</span></div>
         <div class="kennzahl"><b>${fmt(d.querMax * 100)} %</b><span>Querneigung max.</span></div>
         <div class="kennzahl"><b>${fmt(d.steil)} m</b><span>Gelände ≥ 68 %</span></div>
